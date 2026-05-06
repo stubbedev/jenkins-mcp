@@ -114,8 +114,7 @@ const server = new Server(
 
 server.onerror = (error) => console.error('[MCP Error]', error);
 
-server.setRequestHandler(ListToolsRequestSchema, async () => ({
-  tools: jenkins ? [
+const TOOLS = [
     {
       name: 'jenkins_get_build',
       description: 'Get the status and details of a Jenkins build. Use when asked "did the build pass?", "what\'s the status of CI for this commit?", or "why did the build fail?". Pass sha to find the build matching a specific commit (scans recent builds), or buildNumber for an explicit build, or omit both to get the latest. Returns result, duration, commit, branch, cause, parameters, pipeline stage breakdown (with stage ids for jenkins_get_log), recent changes, and artifact URLs.',
@@ -196,8 +195,9 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         properties: {},
       },
     },
-  ] : [],
-}));
+];
+
+server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS }));
 
 async function resolveJobPath(arg: string | undefined): Promise<string> {
   if (arg) return arg;
@@ -249,7 +249,12 @@ async function resolveJobPath(arg: string | undefined): Promise<string> {
 
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: rawArgs = {} } = request.params;
-  if (!jenkins) throw new McpError(ErrorCode.MethodNotFound, `Unknown tool: ${name}`);
+  if (!jenkins) {
+    return {
+      content: [{ type: 'text', text: 'Jenkins is not configured. Set url + username + token in ~/.jenkins-mcp.json or via JENKINS_URL / JENKINS_USERNAME / JENKINS_TOKEN env vars.' }],
+      isError: true,
+    };
+  }
   const args = normalizeArgs(rawArgs);
   try {
     switch (name) {

@@ -1,0 +1,37 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "jenkins-mcp-config",
+  "title": "Jenkins MCP Config",
+  "description": "Configuration file for the jenkins-mcp MCP server",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "type": "string"
+    },
+    "url": {
+      "type": "string",
+      "format": "uri",
+      "description": "Base URL of your Jenkins instance, e.g. https://jenkins.example.com"
+    },
+    "username": {
+      "type": "string",
+      "description": "Jenkins username (the login name, used with the API token for HTTP Basic auth)"
+    },
+    "token": {
+      "type": "string",
+      "description": "Jenkins API token (generate one at <jenkins-url>/me/configure)"
+    },
+    "repoJobMap": {
+      "type": "object",
+      "description": "Optional mapping from git remote URL substring (e.g. host/project/repo or repo slug) to a Jenkins job path. Used to resolve which job(s) to query for the current repository. Values may be a single job path or an array of job paths. Job paths use Jenkins's job-folder syntax, e.g. \"folder/sub-folder/job-name\" or \"my-job\".",
+      "additionalProperties": {
+        "oneOf": [
+          { "type": "string" },
+          { "type": "array", "items": { "type": "string" } }
+        ]
+      }
+    }
+  },
+  "required": ["url", "username", "token"]
+}

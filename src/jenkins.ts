@@ -260,6 +260,7 @@ export class JenkinsClient {
   private headers: Record<string, string>;
   private repoJobMap: Record<string, string[]>;
   private currentUserCache?: { id?: string; fullName?: string };
+  private crumbCache?: { headerName: string; crumb: string } | null;
 
   constructor(baseUrl: string, username: string, token: string, repoJobMap?: Record<string, string | string[]>) {
     this.baseUrl = baseUrl.replace(/\/$/, '');
@@ -301,6 +302,38 @@ export class JenkinsClient {
     } catch {
       return null;
     }
+  }
+
+  private async fetchCrumb(): Promise<{ headerName: string; crumb: string } | null> {
+    if (this.crumbCache !== undefined) return this.crumbCache;
+    try {
+      const data = await this.request<{ crumbRequestField: string; crumb: string }>('GET', '/crumbIssuer/api/json');
+      this.crumbCache = { headerName: data.crumbRequestField, crumb: data.crumb };
+    } catch {
+      this.crumbCache = null;
+    }
+    return this.crumbCache;
+  }
+
+  private async post(path: string, opts: { formData?: Record<string, string>; xml?: string } = {}): Promise<{ location?: string }> {
+    const crumb = await this.fetchCrumb();
+    const url = `${this.baseUrl}${path}`;
+    const headers: Record<string, string> = { ...this.headers };
+    if (crumb) headers[crumb.headerName] = crumb.crumb;
+    let body: string | undefined;
+    if (opts.xml) {
+      headers['Content-Type'] = 'application/xml';
+      body = opts.xml;
+    } else if (opts.formData) {
+      headers['Content-Type'] = 'application/x-www-form-urlencoded';
+      body = new URLSearchParams(opts.formData).toString();
+    }
+    const res = await fetch(url, { method: 'POST', headers, body, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
+    if (!res.ok) {
+      const errText = await res.text();
+      throw new Error(formatJenkinsError(res.status, 'POST', path, errText));
+    }
+    return { location: res.headers.get('Location') ?? undefined };
   }
 
   resolveJobsForRemote(remote: string): string[] {
@@ -628,6 +661,44 @@ export class JenkinsClient {
       lines.push(`  ${it.task?.name ?? '(unnamed)'} — waiting ${waited}${it.why ? ` — ${it.why}` : ''}`);
     }
     return text(lines.join('\n'));
+  }
+
+  async stopBuildTool(args: { jobPath: string; buildNumber: number }): Promise<ToolResult> {
+    const { jobPath, buildNumber } = args;
+    const segs = jobPathToApiSegments(jobPath);
+    await this.post(`/${segs}/${buildNumber}/stop`);
+    return text(`Stop signal sent to build #${buildNumber} of "${jobPath}". It may take a few seconds to terminate.`);
+  }
+
+  async triggerBuildTool(args: { jobPath: string; parameters?: Record<string, string> }): Promise<ToolResult> {
+    const { jobPath, parameters } = args;
+    const segs = jobPathToApiSegments(jobPath);
+    const hasParams = parameters && Object.keys(parameters).length > 0;
+    const { location } = await this.post(
+      `/${segs}/${hasParams ? 'buildWithParameters' : 'build'}`,
+      hasParams ? { formData: parameters } : {},
+    );
+    const lines = [`Build triggered for "${jobPath}".`];
+    if (location) {
+      lines.push(`Queue item: ${location}`);
+      lines.push(`Use jenkins_get_queue to monitor, or jenkins_list_builds to find the build number once it starts.`);
+    }
+    return text(lines.join('\n'));
+  }
+
+  async getJobConfigTool(args: { jobPath: string }): Promise<ToolResult> {
+    const { jobPath } = args;
+    const segs = jobPathToApiSegments(jobPath);
+    const xml = await this.request<string>('GET', `/${segs}/config.xml`, { accept: 'application/xml', raw: true });
+    return text(xml);
+  }
+
+  async updateJobConfigTool(args: { jobPath: string; config: string }): Promise<ToolResult> {
+    const { jobPath, config } = args;
+    if (!config.trim().startsWith('<')) throw new Error('config must be valid Jenkins job XML (starts with <).');
+    const segs = jobPathToApiSegments(jobPath);
+    await this.post(`/${segs}/config.xml`, { xml: config });
+    return text(`Job config for "${jobPath}" updated. Verify with jenkins_get_job_config.`);
   }
 
   async getTestsTool(args: {

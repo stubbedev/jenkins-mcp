@@ -55,7 +55,7 @@ async function buildInstructions(): Promise<string> {
   const lines: string[] = [];
   lines.push('# jenkins-mcp');
   lines.push('');
-  lines.push('Read-only Jenkins tooling: build status, console logs, pipeline stage breakdowns, test reports, and queue inspection. Prefer these tools over shelling out to `curl` or scraping the Jenkins web UI.');
+  lines.push('Jenkins tooling: build status, console logs, pipeline stage breakdowns, test reports, queue inspection, and build control (trigger/stop). Prefer these tools over shelling out to `curl` or scraping the Jenkins web UI.');
   lines.push('');
 
   if (!jenkins || !config) {
@@ -99,6 +99,10 @@ async function buildInstructions(): Promise<string> {
   lines.push('- "show recent builds" → `jenkins_list_builds` with jobPath.');
   lines.push('- "what jobs exist / browse a folder" → `jenkins_list_jobs` (pass folder for sub-folders).');
   lines.push('- "what\'s waiting in the queue" → `jenkins_get_queue`.');
+  lines.push('- "stop/abort a build" → `jenkins_stop_build` with jobPath + buildNumber.');
+  lines.push('- "trigger/start a build" → `jenkins_trigger_build` with jobPath and optional parameters.');
+  lines.push('- "show job config / Jenkinsfile settings" → `jenkins_get_job_config` with jobPath. Returns raw XML config.');
+  lines.push('- "update job config" → `jenkins_update_job_config` with jobPath + config (full XML). Get current config first with jenkins_get_job_config.');
   lines.push('');
   lines.push('Job path syntax: nested folders use slashes, e.g. "platform/api/build-master". URL-encoding is handled by the tool. Tools also accept `job` as an alias for `jobPath`.');
 
@@ -193,6 +197,59 @@ const TOOLS = [
       inputSchema: {
         type: 'object',
         properties: {},
+      },
+    },
+    {
+      name: 'jenkins_stop_build',
+      description: 'Abort a running Jenkins build. Use when asked to "stop", "cancel", or "abort" a build. Sends a stop signal — the build may take a few seconds to terminate. Has no effect on builds that are already complete.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          jobPath:     { type: 'string', description: 'Jenkins job path.' },
+          job:         { type: 'string', description: 'Alias for jobPath.' },
+          buildNumber: { type: ['number', 'string'], description: 'Build number to stop (numeric).' },
+        },
+        required: ['buildNumber'],
+      },
+    },
+    {
+      name: 'jenkins_trigger_build',
+      description: 'Trigger a new Jenkins build, optionally with parameters. Use when asked to "run", "start", "kick off", or "trigger" a build. Returns a queue item URL — use jenkins_get_queue to monitor it, or jenkins_list_builds once it starts.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          jobPath:    { type: 'string', description: 'Jenkins job path.' },
+          job:        { type: 'string', description: 'Alias for jobPath.' },
+          parameters: {
+            type: 'object',
+            description: 'Optional key/value build parameters (for parameterized jobs). Must match the parameter names defined on the job.',
+            additionalProperties: { type: 'string' },
+          },
+        },
+      },
+    },
+    {
+      name: 'jenkins_get_job_config',
+      description: 'Fetch the raw XML configuration for a Jenkins job. Use when asked to "show the job config", "what does the Jenkinsfile point to?", or before making changes with jenkins_update_job_config. Pipeline jobs include the script path or inline Groovy. Freestyle jobs include build steps and triggers.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          jobPath: { type: 'string', description: 'Jenkins job path.' },
+          job:     { type: 'string', description: 'Alias for jobPath.' },
+        },
+      },
+    },
+    {
+      name: 'jenkins_update_job_config',
+      description: 'Replace the XML configuration for a Jenkins job. Always call jenkins_get_job_config first, modify the XML, then pass the full updated XML here. Overwrites the entire job config — partial updates are not supported. Use to change branch specs, pipeline script paths, build triggers, parameters, or other job settings.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          jobPath: { type: 'string', description: 'Jenkins job path.' },
+          job:     { type: 'string', description: 'Alias for jobPath.' },
+          config:  { type: 'string', description: 'Full Jenkins job XML config. Must be the complete document — get the current config with jenkins_get_job_config, modify, then pass here.' },
+        },
+        required: ['config'],
       },
     },
 ];
@@ -304,6 +361,32 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
       case 'jenkins_get_queue':
         return await jenkins.getQueueTool();
+      case 'jenkins_stop_build': {
+        const a = args as { jobPath?: string; buildNumber: unknown };
+        return await jenkins.stopBuildTool({
+          jobPath: await resolveJobPath(a.jobPath),
+          buildNumber: coerceBuildNumber(a.buildNumber),
+        });
+      }
+      case 'jenkins_trigger_build': {
+        const a = args as { jobPath?: string; parameters?: Record<string, string> };
+        return await jenkins.triggerBuildTool({
+          jobPath: await resolveJobPath(a.jobPath),
+          parameters: a.parameters,
+        });
+      }
+      case 'jenkins_get_job_config': {
+        const a = args as { jobPath?: string };
+        return await jenkins.getJobConfigTool({ jobPath: await resolveJobPath(a.jobPath) });
+      }
+      case 'jenkins_update_job_config': {
+        const a = args as { jobPath?: string; config: string };
+        if (!a.config) throw new Error('config is required');
+        return await jenkins.updateJobConfigTool({
+          jobPath: await resolveJobPath(a.jobPath),
+          config: a.config,
+        });
+      }
       default:
         throw new McpError(ErrorCode.MethodNotFound, `Unknown tool: ${name}`);
     }

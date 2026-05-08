@@ -14,6 +14,7 @@ import {
 import { loadConfig } from './config.js';
 import { JenkinsClient, type BuildRef } from './jenkins.js';
 import { currentGitRemote, currentGitBranch, currentGitSha } from './git.js';
+import type { JobConfig } from './config-xml.js';
 
 const pkg = JSON.parse(
   readFileSync(join(dirname(fileURLToPath(import.meta.url)), '../package.json'), 'utf-8')
@@ -241,15 +242,64 @@ const TOOLS = [
     },
     {
       name: 'jenkins_update_job_config',
-      description: 'Replace the XML configuration for a Jenkins job. Always call jenkins_get_job_config first, modify the XML, then pass the full updated XML here. Overwrites the entire job config — partial updates are not supported. Use to change branch specs, pipeline script paths, build triggers, parameters, or other job settings.',
+      description: 'Patch the configuration of a Jenkins job. Call jenkins_get_job_config first to see the current state, then pass only the fields you want to change. Partial updates are supported — omitted fields are left unchanged. Use to change description, pipeline script, Jenkinsfile path, build triggers, parameters, or retention settings.',
       inputSchema: {
         type: 'object',
         properties: {
           jobPath: { type: 'string', description: 'Jenkins job path.' },
           job:     { type: 'string', description: 'Alias for jobPath.' },
-          config:  { type: 'string', description: 'Full Jenkins job XML config. Must be the complete document — get the current config with jenkins_get_job_config, modify, then pass here.' },
+          patch: {
+            type: 'object',
+            description: 'Fields to update. All fields are optional — only provided fields are changed.',
+            properties: {
+              description:    { type: 'string' },
+              disabled:       { type: 'boolean' },
+              concurrentBuilds: { type: 'boolean' },
+              definition: {
+                type: 'object',
+                properties: {
+                  type:        { type: 'string', enum: ['inline', 'scm'], description: '"inline" for script stored in Jenkins, "scm" for Jenkinsfile in repo.' },
+                  script:      { type: 'string', description: 'Groovy pipeline script (inline type only).' },
+                  scriptPath:  { type: 'string', description: 'Path to Jenkinsfile in the repo (scm type only, default "Jenkinsfile").' },
+                  lightweight: { type: 'boolean', description: 'Lightweight checkout for Jenkinsfile (scm type only, default true).' },
+                },
+              },
+              triggers: {
+                type: 'array',
+                items: {
+                  type: 'object',
+                  properties: {
+                    type: { type: 'string', enum: ['cron', 'scmPoll'] },
+                    spec: { type: 'string', description: 'Cron expression, e.g. "H/15 * * * *".' },
+                  },
+                  required: ['type', 'spec'],
+                },
+              },
+              parameters: {
+                type: 'array',
+                items: {
+                  type: 'object',
+                  properties: {
+                    type:        { type: 'string', enum: ['string', 'boolean', 'text', 'choice', 'password'] },
+                    name:        { type: 'string' },
+                    default:     { type: 'string' },
+                    description: { type: 'string' },
+                    choices:     { type: 'array', items: { type: 'string' } },
+                  },
+                  required: ['type', 'name'],
+                },
+              },
+              buildRetention: {
+                type: 'object',
+                properties: {
+                  numToKeep:  { type: 'number', description: 'Max builds to keep (-1 = unlimited).' },
+                  daysToKeep: { type: 'number', description: 'Max days to keep builds (-1 = unlimited).' },
+                },
+              },
+            },
+          },
         },
-        required: ['config'],
+        required: ['patch'],
       },
     },
 ];
@@ -380,11 +430,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return await jenkins.getJobConfigTool({ jobPath: await resolveJobPath(a.jobPath) });
       }
       case 'jenkins_update_job_config': {
-        const a = args as { jobPath?: string; config: string };
-        if (!a.config) throw new Error('config is required');
+        const a = args as { jobPath?: string; patch: JobConfig };
+        if (!a.patch) throw new Error('patch is required');
         return await jenkins.updateJobConfigTool({
           jobPath: await resolveJobPath(a.jobPath),
-          config: a.config,
+          patch: a.patch,
         });
       }
       default:

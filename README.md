@@ -1,10 +1,12 @@
 # jenkins-mcp
 
-A [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server for **Jenkins**. Read-only tooling for build status, console logs, pipeline stage breakdowns, test reports, and queue inspection — designed to pair with [`atlassian-mcp`](https://github.com/stubbedev/atlassian-mcp) so you can ask "did the build pass?" alongside Jira and Bitbucket questions.
+A [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server for **Jenkins**. Inspect builds, control jobs, and manage pipeline configuration — designed to pair with [`atlassian-mcp`](https://github.com/stubbedev/atlassian-mcp) so you can ask "did the build pass?" alongside Jira and Bitbucket questions.
 
 ---
 
 ## Tools
+
+### Inspection
 
 | Tool | Description |
 |---|---|
@@ -15,6 +17,20 @@ A [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server for **J
 | `jenkins_list_jobs` | Browse jobs at the root or inside a folder. |
 | `jenkins_get_queue` | Items currently waiting in the build queue. |
 
+### Build control
+
+| Tool | Description |
+|---|---|
+| `jenkins_trigger_build` | Trigger a new build, optionally with parameters. Returns a queue item URL to track progress. |
+| `jenkins_stop_build` | Abort a running build by number. |
+
+### Job configuration
+
+| Tool | Description |
+|---|---|
+| `jenkins_get_job_config` | Fetch a job's configuration as structured JSON — pipeline definition, triggers, parameters, and retention settings. |
+| `jenkins_update_job_config` | Patch a job's configuration. Pass only the fields to change; everything else is preserved. Supports description, pipeline script/path, triggers, parameters, and build retention. |
+
 ### Natural-language examples
 
 - "did CI pass for this commit?" → `jenkins_get_build` with `sha=<HEAD>`
@@ -22,6 +38,9 @@ A [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server for **J
 - "show me the last 10 builds of master" → `jenkins_list_builds`
 - "what jobs exist under platform/api?" → `jenkins_list_jobs` with `folder=platform/api`
 - "what's waiting in the queue?" → `jenkins_get_queue`
+- "trigger a build with ENV=production" → `jenkins_trigger_build` with `parameters`
+- "stop the current build" → `jenkins_stop_build` with `buildNumber`
+- "add a nightly cron trigger to this job" → `jenkins_get_job_config` then `jenkins_update_job_config` with updated `triggers`
 
 ---
 
@@ -200,7 +219,8 @@ Then use `node /path/to/jenkins-mcp/dist/index.js` instead of the `npx` command 
 ## Notes
 
 - Authentication is HTTP Basic with `username:apitoken` (Jenkins's standard mechanism).
-- All tools are read-only — this MCP does not trigger, abort, or modify builds.
+- Write operations (`jenkins_trigger_build`, `jenkins_stop_build`, `jenkins_update_job_config`) require the API token user to have the appropriate Jenkins permissions.
+- CSRF crumb handling is automatic — API tokens bypass the crumb check on most Jenkins installations, but the server fetches and caches a crumb for installations that require it.
 - `jenkins_get_build` with `sha` scans the last 30 builds of the job for a matching `lastBuiltRevision`. Increase `scanLimit` for repos with many builds per commit.
 - Pipeline stage breakdown comes from Jenkins's `wfapi` (workflow plugin). Freestyle jobs don't expose it, and the tool falls back to summary fields only.
 - Test reports come from the standard Jenkins JUnit / xUnit plugins. Jobs that don't publish results return a friendly 404 message.

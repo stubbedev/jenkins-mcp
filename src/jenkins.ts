@@ -1,3 +1,5 @@
+import { parseJobConfig, mergeJobConfig, type JobConfig } from './config-xml.js';
+
 type ToolResult = { content: Array<{ type: 'text'; text: string }> };
 
 export type BuildRef = number | 'lastBuild' | 'lastSuccessfulBuild' | 'lastFailedBuild' | 'lastCompletedBuild';
@@ -690,15 +692,18 @@ export class JenkinsClient {
     const { jobPath } = args;
     const segs = jobPathToApiSegments(jobPath);
     const xml = await this.request<string>('GET', `/${segs}/config.xml`, { accept: 'application/xml', raw: true });
-    return text(xml);
+    const config = parseJobConfig(xml);
+    return text(JSON.stringify(config, null, 2));
   }
 
-  async updateJobConfigTool(args: { jobPath: string; config: string }): Promise<ToolResult> {
-    const { jobPath, config } = args;
-    if (!config.trim().startsWith('<')) throw new Error('config must be valid Jenkins job XML (starts with <).');
+  async updateJobConfigTool(args: { jobPath: string; patch: Partial<JobConfig> }): Promise<ToolResult> {
+    const { jobPath, patch } = args;
+    if (!patch || Object.keys(patch).length === 0) throw new Error('patch is required and must contain at least one field to update.');
     const segs = jobPathToApiSegments(jobPath);
-    await this.post(`/${segs}/config.xml`, { xml: config });
-    return text(`Job config for "${jobPath}" updated. Verify with jenkins_get_job_config.`);
+    const xml = await this.request<string>('GET', `/${segs}/config.xml`, { accept: 'application/xml', raw: true });
+    const merged = mergeJobConfig(xml, patch);
+    await this.post(`/${segs}/config.xml`, { xml: merged });
+    return text(`Job config for "${jobPath}" updated.\n\nNew config:\n${JSON.stringify(parseJobConfig(merged), null, 2)}`);
   }
 
   async getTestsTool(args: {

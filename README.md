@@ -1,6 +1,8 @@
 # jenkins-mcp
 
-A [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server for **Jenkins**. Inspect builds, control jobs, and manage pipeline configuration — designed to pair with [`atlassian-mcp`](https://github.com/stubbedev/atlassian-mcp) so you can ask "did the build pass?" alongside Jira and Bitbucket questions.
+A [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server for **Jenkins**, written in Go. Inspect builds, control jobs, and manage pipeline configuration — designed to pair with [`atlassian-mcp`](https://github.com/stubbedev/atlassian-mcp) so you can ask "did the build pass?" alongside Jira and Bitbucket questions.
+
+Distributed three ways — all from the same source: a zero-Node **prebuilt binary** (`go install` or a release download), an **npm wrapper** (`npx @stubbedev/jenkins-mcp`) that fetches the matching binary so every config below works unchanged, and a **Nix flake** (`nix run github:stubbedev/jenkins-mcp`).
 
 ---
 
@@ -28,7 +30,7 @@ A [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server for **J
 
 | Tool | Description |
 |---|---|
-| `jenkins_get_job_config` | Fetch a job's configuration as structured JSON — pipeline definition, triggers, parameters, and retention settings. |
+| `jenkins_get_job_config` | Fetch a job's configuration as a structured object (TOON by default) — pipeline definition, triggers, parameters, and retention settings. |
 | `jenkins_update_job_config` | Patch a job's configuration. Pass only the fields to change; everything else is preserved. Supports description, pipeline script/path, triggers, parameters, and build retention. |
 
 ### Natural-language examples
@@ -81,7 +83,7 @@ JENKINS_USERNAME=your-jenkins-login
 JENKINS_TOKEN=your-api-token
 ```
 
-Config is resolved in this order: `--config <path>` CLI arg → `JENKINS_MCP_CONFIG` env var → `~/.jenkins-mcp.json` → `.jenkins-mcp.json` in cwd → environment variables.
+Config is resolved in this order: `--config <path>` CLI arg → `JENKINS_MCP_CONFIG` env var → `~/.jenkins-mcp.json` → `$XDG_CONFIG_HOME/jenkins-mcp/config.json` (default `~/.config/jenkins-mcp/config.json`) → `.jenkins-mcp.json` in cwd → environment variables.
 
 ### 3. Connect to your AI tool
 
@@ -185,9 +187,39 @@ mcpServers:
 
 ---
 
+#### Go install (no Node)
+
+If you have Go installed and prefer a native binary on your `PATH`:
+
+```bash
+go install github.com/stubbedev/jenkins-mcp@latest
+```
+
+Then point your MCP client at the `jenkins-mcp` command directly, e.g. for Claude Code:
+
+```bash
+claude mcp add jenkins -- jenkins-mcp --config ~/.jenkins-mcp.json
+```
+
+Prebuilt binaries for every platform are also attached to each [GitHub release](https://github.com/stubbedev/jenkins-mcp/releases) if you'd rather not build.
+
+---
+
+#### Nix (NixOS / nix-darwin / home-manager)
+
+Run it straight from the flake — no clone, no install:
+
+```bash
+nix run github:stubbedev/jenkins-mcp -- --config ~/.jenkins-mcp.json
+```
+
+Or reference it in your MCP client config with that command, or add the flake as an input and use `packages.default` in your system/home configuration. The flake builds from source with `buildGoModule`; its version tracks `package.json` automatically and CI keeps the `vendorHash` current.
+
+---
+
 #### Any other MCP-compatible tool
 
-Most tools that support MCP accept the same JSON format. Use `npx` as the command with `["-y", "@stubbedev/jenkins-mcp@latest", "--config", "/path/to/config.json"]` as the args.
+Most tools that support MCP accept the same JSON format. Use `npx` as the command with `["-y", "@stubbedev/jenkins-mcp@latest", "--config", "/path/to/config.json"]` as the args — or the `jenkins-mcp` binary directly.
 
 ### Updating existing installs
 
@@ -203,16 +235,21 @@ Then restart your MCP client.
 
 ### Manual install (optional)
 
-If you prefer to clone and run locally:
+If you prefer to clone and build locally (requires Go 1.26+):
 
 ```bash
 git clone git@github.com:stubbedev/jenkins-mcp.git
 cd jenkins-mcp
-npm install
-npm run build
+go build -o jenkins-mcp .
 ```
 
-Then use `node /path/to/jenkins-mcp/dist/index.js` instead of the `npx` command in the configs above.
+Then use `/path/to/jenkins-mcp/jenkins-mcp` instead of the `npx` command in the configs above.
+
+---
+
+## Output format (TOON)
+
+Structured tool responses (`jenkins_get_job_config`, and the config echoed back by `jenkins_update_job_config`) are serialized as [TOON](https://github.com/toon-format/toon) (Token-Oriented Object Notation) by default — a compact, LLM-friendly format that uses fewer tokens than equivalent JSON. Pass `format: "json"` on those tools to get JSON instead, or set `JENKINS_MCP_FORMAT=json` to flip the default process-wide. The build/log/test/queue tools already return purpose-built plain text and are unaffected.
 
 ---
 
@@ -229,29 +266,21 @@ Then use `node /path/to/jenkins-mcp/dist/index.js` instead of the `npx` command 
 
 ## Releases (Maintainers)
 
-This package is published to npm as `@stubbedev/jenkins-mcp`.
+Each release ships **both** prebuilt Go binaries (attached to the GitHub release) and the npm wrapper `@stubbedev/jenkins-mcp`. `.github/workflows/publish.yml` runs on a pushed `v*` tag and: cross-compiles binaries for 14 targets — linux (amd64, arm64, arm/v7, 386, ppc64le, s390x, riscv64), darwin (amd64, arm64), windows (amd64, arm64, 386), and freebsd (amd64, arm64) — attaches them to the GitHub release, then publishes the npm package. The Nix flake builds from the tagged source and tracks `package.json` for its version, so it needs no separate release step.
 
-Use semantic versioning for releases. Breaking tool-surface changes should bump the minor version while `<1.0.0` (for example `0.0.x` -> `0.1.0`).
+Use semantic versioning. Breaking tool-surface changes should bump the minor version while `<1.0.0` (for example `0.0.x` -> `0.1.0`).
 
-Automatic publish is configured in `.github/workflows/publish.yml` and runs when a new version tag is pushed.
-
-Release flow:
+Release flow (the `preversion` hook runs `go vet`, `go test`, and the smoke check first):
 
 ```bash
 # choose one: patch | minor | major
-increment=patch
-
-# bumps package.json + package-lock.json,
-# creates a version commit, and creates a git tag (for example v0.1.17)
-npm version "$increment"
-
-# push commit and tag to GitHub
-git push origin HEAD --follow-tags
+npm run release:minor
 ```
 
-GitHub Actions will publish the npm release from that pushed tag.
+This bumps `package.json`, commits, tags, and pushes; the pushed tag drives the publish workflow.
 
-- The workflow is configured for npm Trusted Publisher (OIDC), so no `NPM_TOKEN` secret is required
+- The npm step uses npm Trusted Publisher (OIDC), so no `NPM_TOKEN` secret is required
+- The release step uses the default `GITHUB_TOKEN`
 
 Required npm setup (one-time):
 
@@ -261,22 +290,26 @@ Required npm setup (one-time):
 
 ## Development
 
+Requires Go 1.26+. Dependencies: [`mark3labs/mcp-go`](https://github.com/mark3labs/mcp-go) (MCP server framework), [`toon-format/toon-go`](https://github.com/toon-format/toon-go) (TOON output), and [`beevik/etree`](https://github.com/beevik/etree) (lossless config.xml editing).
+
 ```bash
-# Watch mode — recompiles on file changes
-npm run dev
+# Build
+go build -o jenkins-mcp .
 
-# Run the built server directly
-node dist/index.js
+# Run directly
+./jenkins-mcp --config /path/to/config.json
 
-# Test the tool list
-echo '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' | node dist/index.js
+# Vet + test
+go vet ./...
+go test ./...
 
-# Quick release smoke check
+# Quick smoke check (builds + validates tools/list)
 npm run smoke
+
+# Test the tool list by hand
+printf '%s\n' \
+  '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"t","version":"1"}}}' \
+  '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}' | ./jenkins-mcp
 ```
 
-To use a specific config file:
-
-```bash
-node dist/index.js --config /path/to/config.json
-```
+Tool schemas live in `tools.json` (embedded into the binary via `go:embed`). The npm wrapper lives in `bin/cli.mjs` + `scripts/`. The Nix flake is `flake.nix`.

@@ -253,6 +253,50 @@ Structured tool responses (`jenkins_get_job_config`, and the config echoed back 
 
 ---
 
+## Transport: stdio (default) or HTTP
+
+By default the server speaks MCP over **stdio** — the right choice when your AI tool launches the binary as a child process (the configs above).
+
+To run it as a long-lived service — e.g. shared by a team, or sitting **behind a reverse proxy** — start it in **Streamable HTTP** mode instead:
+
+```bash
+jenkins-mcp --http                 # listen on 127.0.0.1:8080/mcp
+jenkins-mcp --http 0.0.0.0:9000    # bind a specific addr/port
+JENKINS_MCP_HTTP=:8080 jenkins-mcp # same, via env (handy in containers)
+```
+
+| Flag / env | Effect |
+| --- | --- |
+| `--http[=addr]` / `--http addr` | Enable HTTP. `addr` defaults to `127.0.0.1:8080`. |
+| `JENKINS_MCP_HTTP=addr` | Enable HTTP via env. `1`/`true` means the default addr. |
+| `JENKINS_MCP_HTTP_PATH=/path` | Endpoint path (default `/mcp`). |
+| `--http-stateless` / `JENKINS_MCP_HTTP_STATELESS=1` | Drop persistent sessions (see below). |
+
+Point your MCP client at `http://<host>:<port>/mcp`. Put TLS/auth on the proxy in front; the server itself does not terminate TLS.
+
+The HTTP server is **stateful** by default: it keeps a session per client so server→client requests work — namely the MCP **roots** lookup used to find the caller's repo, and the elicitation prompt that disambiguates when a repo maps to multiple Jenkins jobs. This is the right default for a **local proxy** (single tenant — nothing to load-balance).
+
+If you front it with a **cloud load balancer**, pass `--http-stateless`: every request becomes self-contained with no session affinity to pin. The trade-off is that roots resolution and the elicitation picker no longer work — supply the repo root via header/arg and pass `jobPath` explicitly.
+
+### Working directory in HTTP mode
+
+In stdio mode the server runs `git` in its own working directory to auto-resolve `jobPath` from the current repo's remote (via `repoJobMap`). Over HTTP there is **no single working tree** — the process serves many callers — so the working tree is resolved per request, checked in this order:
+
+1. **`cwd` (or `repoRoot`) tool argument** — supply the repo root on the call; git runs there for that request.
+2. **`X-Repo-Root` (or `X-Cwd`) HTTP header** — a fronting proxy/harness can inject the repo root per request.
+3. **MCP roots** — if the client exposes its workspace via the [roots](https://modelcontextprotocol.io/docs/concepts/roots) capability, git runs there. With several roots, the server runs git in each and unions the `repoJobMap` matches, so the one root that maps to a Jenkins job wins automatically; if several roots map to different jobs you get the elicitation picker. Cached per session and refreshed on `roots/list_changed` (stateful mode only).
+
+If none of these yields a repo (e.g. stateless mode with no header, or no root maps), pass `jobPath` explicitly. Errors name the resolved directory (e.g. "ran git in `/x` but found no origin remote") so misconfiguration is obvious.
+
+### Operational notes (HTTP)
+
+- **Health check**: `GET /healthz` returns `200 ok jenkins-mcp <version>` — wire it to your proxy/orchestrator liveness probe.
+- **Graceful shutdown**: `SIGINT`/`SIGTERM` drains in-flight requests (5s) before exiting.
+- **Session reaping**: stateful sessions idle longer than 30 min are dropped, so a long-lived server doesn't leak state from clients that disconnected uncleanly.
+- **No hangs**: git invocations run with `GIT_TERMINAL_PROMPT=0` and a 10s timeout; the `roots/list` lookup has a 5s timeout. A wedged client or repo can't stall a tool call.
+
+---
+
 ## Notes
 
 - Authentication is HTTP Basic with `username:apitoken` (Jenkins's standard mechanism).

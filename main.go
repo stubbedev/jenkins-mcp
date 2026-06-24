@@ -26,6 +26,8 @@ func main() {
 		defaultFormat = f
 	}
 
+	tc := resolveTransport(os.Args[1:])
+
 	config := loadConfig()
 	if config != nil {
 		jenkins = NewJenkinsClient(config.URL, config.Username, config.Token, config.RepoJobMap)
@@ -34,8 +36,12 @@ func main() {
 	s := server.NewMCPServer(
 		"jenkins-mcp", Version,
 		server.WithToolCapabilities(false),
-		server.WithInstructions(buildInstructions(config)),
+		server.WithInstructions(buildInstructions(config, tc.http)),
 	)
+
+	// Refresh cached client roots when the client signals they changed.
+	s.AddNotificationHandler(string(mcp.MethodNotificationRootsListChanged),
+		func(ctx context.Context, _ mcp.JSONRPCNotification) { invalidateRoots(ctx) })
 
 	for _, def := range loadToolDefs() {
 		tool := mcp.Tool{
@@ -57,8 +63,14 @@ func main() {
 		})
 	}
 
-	if err := server.ServeStdio(s); err != nil {
-		logErr("[jenkins-mcp] fatal: " + err.Error())
+	var serveErr error
+	if tc.http {
+		serveErr = serveHTTP(s, tc)
+	} else {
+		serveErr = server.ServeStdio(s)
+	}
+	if serveErr != nil {
+		logErr("[jenkins-mcp] fatal: " + serveErr.Error())
 		os.Exit(1)
 	}
 }
@@ -69,6 +81,14 @@ func dispatch(ctx context.Context, name string, rawArgs map[string]any) (*mcp.Ca
 		return mcp.NewToolResultError("Jenkins is not configured. Set url + username + token in ~/.jenkins-mcp.json or via JENKINS_URL / JENKINS_USERNAME / JENKINS_TOKEN env vars."), nil
 	}
 	args := normalizeArgs(rawArgs)
+	// A per-call `cwd` (or `repoRoot`) argument overrides any header-supplied
+	// working directory, so a harness that cannot set per-request headers can
+	// still tell the server which repo/working tree to run git in.
+	if dir := argString(args, "cwd"); dir != "" {
+		ctx = withCwd(ctx, dir)
+	} else if dir := argString(args, "repoRoot"); dir != "" {
+		ctx = withCwd(ctx, dir)
+	}
 	out, err := runTool(ctx, name, args)
 	if err != nil {
 		return mcp.NewToolResultError("Error: " + err.Error()), nil
@@ -175,25 +195,82 @@ func runTool(ctx context.Context, name string, args map[string]any) (string, err
 }
 
 // resolveJobPath returns the explicit jobPath, or resolves it from the current
-// git remote via repoJobMap. On multiple matches it asks the client to pick one
-// via MCP elicitation, falling back to an error listing the options when the
-// client does not support elicitation (or the user cancels).
+// git remote via repoJobMap. On multiple candidate jobs it asks the client to
+// pick one via MCP elicitation, falling back to an error listing the options
+// when the client does not support elicitation (or the user cancels).
 func resolveJobPath(ctx context.Context, arg string) (string, error) {
 	if arg != "" {
 		return arg, nil
 	}
-	matches := jenkins.resolveJobsForRemote(currentGitRemote())
+
+	matches, err := resolveJobMatches(ctx)
+	if err != nil {
+		return "", err
+	}
 	switch len(matches) {
 	case 1:
 		return matches[0], nil
 	case 0:
-		return "", fmt.Errorf("jobPath is required (no mapping found for current git remote in repoJobMap)")
+		return "", fmt.Errorf("jobPath is required (no entry in repoJobMap matches the working tree's git remote)")
 	default:
 		if picked, ok := elicitJobPath(ctx, matches); ok {
 			return picked, nil
 		}
-		return "", fmt.Errorf("multiple Jenkins jobs map to this remote (%s). Pass jobPath explicitly", strings.Join(matches, ", "))
+		return "", fmt.Errorf("multiple Jenkins jobs map to this repo (%s). Pass jobPath explicitly", strings.Join(matches, ", "))
 	}
+}
+
+// resolveJobMatches resolves the candidate Jenkins jobs for the caller's
+// working tree. The working tree comes, in priority order, from an explicit
+// cwd/repoRoot arg or X-Repo-Root header (already in context), else from the
+// workspace roots the client exposed via MCP roots. With multiple roots it runs
+// git in each and unions the matches, so the one root that maps to a job wins
+// without the caller disambiguating; if several roots map to different jobs the
+// union is returned for elicitation.
+func resolveJobMatches(ctx context.Context) ([]string, error) {
+	// Explicit working directory (arg or header).
+	if dir := cwdFromContext(ctx); dir != "" {
+		if !isRepoDir(dir) {
+			return nil, fmt.Errorf("working directory %q is not an absolute, existing directory — pass jobPath explicitly, or a valid cwd/repoRoot", dir)
+		}
+		remote := currentGitRemote(ctx)
+		if remote == "" {
+			return nil, fmt.Errorf("jobPath is required: ran git in %q but found no 'origin' remote (not a git repo, or no origin configured)", dir)
+		}
+		return jenkins.resolveJobsForRemote(remote), nil
+	}
+
+	// Otherwise, the workspace roots the client advertised.
+	roots := rootsForSession(ctx)
+	if len(roots) == 0 {
+		// No advertised roots: fall back to git in the server's own cwd. This is
+		// the stdio case, where the process runs inside the user's repo.
+		remote := currentGitRemote(ctx)
+		if remote == "" {
+			return nil, fmt.Errorf("jobPath is required (no working tree to resolve it from — pass jobPath, a cwd/repoRoot argument, or send an X-Repo-Root header)")
+		}
+		return jenkins.resolveJobsForRemote(remote), nil
+	}
+
+	// One or more roots: union the matches across every valid root.
+	seen := map[string]bool{}
+	var matches []string
+	for _, root := range roots {
+		if !isRepoDir(root) {
+			continue
+		}
+		remote := currentGitRemote(withCwd(ctx, root))
+		if remote == "" {
+			continue
+		}
+		for _, m := range jenkins.resolveJobsForRemote(remote) {
+			if !seen[m] {
+				seen[m] = true
+				matches = append(matches, m)
+			}
+		}
+	}
+	return matches, nil
 }
 
 // elicitJobPath asks the connected client to choose one of matches via an MCP
@@ -378,7 +455,7 @@ func parsePatch(raw any) (*JobConfig, error) {
 // buildInstructions renders the server instructions string surfaced to clients,
 // mirroring the TS buildInstructions (without the live whoami round-trip, which
 // the client makes lazily anyway).
-func buildInstructions(config *Config) string {
+func buildInstructions(config *Config, httpMode bool) string {
 	var l lines
 	l.add("# jenkins-mcp")
 	l.blank()
@@ -402,10 +479,21 @@ func buildInstructions(config *Config) string {
 	}
 	l.add("- Jenkins: %s%s", config.URL, who)
 
-	remote := currentGitRemote()
+	if httpMode {
+		l.blank()
+		l.add("## Current repo")
+		l.add("- Serving over HTTP — the working tree is per request, not per process.")
+		l.add("- jobPath auto-resolution runs git in the caller's working tree, resolved (in order) from: a `cwd` / `repoRoot` tool argument, an `X-Repo-Root` header, or the workspace root the client exposes via MCP roots. If none yields a single repo, pass jobPath explicitly.")
+		l.blank()
+		writeToolGuide(&l)
+		return l.String()
+	}
+
+	ctx := context.Background()
+	remote := currentGitRemote(ctx)
 	if remote != "" {
-		branch := currentGitBranch()
-		sha := currentGitSha()
+		branch := currentGitBranch(ctx)
+		sha := currentGitSha(ctx)
 		l.blank()
 		l.add("## Current repo")
 		l.add("- Remote: %s", remote)
@@ -436,6 +524,13 @@ func buildInstructions(config *Config) string {
 		}
 	}
 
+	writeToolGuide(&l)
+	return l.String()
+}
+
+// writeToolGuide appends the shared "Use these tools" section, common to both
+// stdio and HTTP instructions.
+func writeToolGuide(l *lines) {
 	l.blank()
 	l.add("## Use these tools")
 	l.add("- \"did the build pass / status of the build\" → `jenkins_get_build` with jobPath (and optionally sha=<commit> to find the build for a specific commit, or buildNumber for an explicit build).")
@@ -452,5 +547,4 @@ func buildInstructions(config *Config) string {
 	l.add("Job path syntax: nested folders use slashes, e.g. \"platform/api/build-master\". URL-encoding is handled by the tool. Tools also accept `job` as an alias for `jobPath`.")
 	l.blank()
 	l.add("IMPORTANT: `jenkins_trigger_build`, `jenkins_stop_build`, and `jenkins_update_job_config` change Jenkins state. Do not call them without an explicit user instruction. The read tools (build status, logs, tests, queue, job listing/config) are always safe.")
-	return l.String()
 }

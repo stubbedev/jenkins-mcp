@@ -3,9 +3,12 @@ node_modules/
 
 # build output
 dist/
+/jenkins-mcp
+/jenkins-mcp.exe
+/bin/jenkins-mcp
+/bin/jenkins-mcp.exe
+result
 
 # config & secrets
 .env
 .jenkins-mcp.json
-
-# package-lock.json is tracked for reproducible installs (required by npm ci in CI)

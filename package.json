@@ -1,44 +1,32 @@
 {
   "name": "@stubbedev/jenkins-mcp",
-  "version": "0.1.6",
-  "description": "MCP server for Jenkins build status and logs",
+  "version": "0.2.0",
+  "description": "MCP server for Jenkins build status and logs (Go, distributed as a prebuilt binary)",
   "license": "MIT",
   "type": "module",
-  "main": "dist/index.js",
+  "bin": {
+    "jenkins-mcp": "bin/cli.mjs"
+  },
   "files": [
-    "dist",
+    "bin/cli.mjs",
+    "scripts/download.mjs",
+    "scripts/postinstall.mjs",
     "jenkins-mcp.schema.json",
     "README.md",
     "LICENSE"
   ],
-  "bin": {
-    "jenkins-mcp": "dist/index.js"
-  },
   "scripts": {
-    "build": "tsc",
-    "start": "node dist/index.js",
-    "dev": "tsx src/index.ts",
-    "release:patch": "npm version patch && git push origin && git push origin --tags && gh release create $(git describe --tags) --generate-notes",
-    "release:minor": "npm version minor && git push origin && git push origin --tags && gh release create $(git describe --tags) --generate-notes",
-    "release:major": "npm version major && git push origin && git push origin --tags && gh release create $(git describe --tags) --generate-notes",
-    "smoke": "npm run build && npm run smoke:tools",
-    "smoke:tools": "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\",\"params\":{}}' | node dist/index.js",
-    "smoke:validate": "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\",\"params\":{}}' | node dist/index.js | node -e \"let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{const r=JSON.parse(d.trim());if(r.error)throw new Error('server error: '+r.error.message);const t=r.result?.tools;if(!Array.isArray(t)||!t.length)throw new Error('no tools in response');const bad=t.filter(x=>!x.name||!x.inputSchema);if(bad.length)throw new Error('malformed tools: '+bad.map(x=>x.name??'(unnamed)').join(', '));console.log('smoke OK — '+t.length+' tool(s): '+t.map(x=>x.name).join(', '))}catch(e){console.error('smoke FAIL:',e.message);process.exit(1)}})\"",
-    "prerelease": "npm run build && npm run smoke:validate && ncu"
-  },
-  "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.29.0",
-    "dotenv": "^17.4.2",
-    "fast-xml-parser": "^5.9.3"
-  },
-  "devDependencies": {
-    "@types/node": "^25.9.4",
-    "npm-check-updates": "^21.0.3",
-    "tsx": "^4.22.4",
-    "typescript": "^6.0.3"
+    "postinstall": "node scripts/postinstall.mjs",
+    "build": "go build -o jenkins-mcp .",
+    "test": "go test ./...",
+    "smoke": "go build -o jenkins-mcp . && printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2024-11-05\",\"capabilities\":{},\"clientInfo\":{\"name\":\"smoke\",\"version\":\"1\"}}}' '{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\",\"params\":{}}' | JENKINS_URL=https://smoke.invalid JENKINS_USERNAME=smoke JENKINS_TOKEN=smoke ./jenkins-mcp | node -e \"let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{const r=d.trim().split(/\\n/).map(l=>JSON.parse(l)).find(x=>x.id===2);if(!r)throw new Error('no tools/list response');if(r.error)throw new Error('server error: '+r.error.message);const t=r.result&&r.result.tools;if(!Array.isArray(t)||!t.length)throw new Error('no tools in response');const bad=t.filter(x=>!x.name||!x.inputSchema);if(bad.length)throw new Error('malformed tools: '+bad.map(x=>x.name||'(unnamed)').join(', '));console.log('smoke OK — '+t.length+' tool(s): '+t.map(x=>x.name).join(', '))}catch(e){console.error('smoke FAIL:',e.message);process.exit(1)}})\"",
+    "preversion": "go vet ./... && npm run test && npm run smoke",
+    "release:patch": "npm version patch && git push origin HEAD --follow-tags",
+    "release:minor": "npm version minor && git push origin HEAD --follow-tags",
+    "release:major": "npm version major && git push origin HEAD --follow-tags"
   },
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=24.0.0"
   },
   "publishConfig": {
     "access": "public"

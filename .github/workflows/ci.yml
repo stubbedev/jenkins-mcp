@@ -38,5 +38,14 @@ jobs:
         with:
           extra_nix_config: |
             experimental-features = nix-command flakes
+      # Push every store path realised during this run to the attic cache.
+      # Only runs on master pushes (not PRs / forks) where the token exists.
+      - name: Configure attic cache
+        if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+        uses: ryanccn/attic-action@v0
+        with:
+          endpoint: https://nix.stubbe.dev
+          cache: default
+          token: ${{ secrets.ATTIC_TOKEN }}
       - name: Build flake
         run: nix build .#default --print-build-logs

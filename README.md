@@ -334,7 +334,7 @@ Required npm setup (one-time):
 
 ## Development
 
-Requires Go 1.26+. Dependencies: [`mark3labs/mcp-go`](https://github.com/mark3labs/mcp-go) (MCP server framework), [`toon-format/toon-go`](https://github.com/toon-format/toon-go) (TOON output), and [`beevik/etree`](https://github.com/beevik/etree) (lossless config.xml editing).
+Requires Go 1.26+. Dependencies: [`modelcontextprotocol/go-sdk`](https://github.com/modelcontextprotocol/go-sdk) (official MCP SDK), [`toon-format/toon-go`](https://github.com/toon-format/toon-go) (TOON output), and [`beevik/etree`](https://github.com/beevik/etree) (lossless config.xml editing).
 
 ```bash
 # Build

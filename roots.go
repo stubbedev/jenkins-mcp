@@ -7,8 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mark3labs/mcp-go/mcp"
-	"github.com/mark3labs/mcp-go/server"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 // rootsTimeout bounds the roots/list round-trip so a client that declared the
@@ -31,22 +30,17 @@ type rootsEntry struct {
 // per session and refreshed on a list_changed notification. Callers decide what
 // to do with multiple roots (see resolveJobPath's per-root matching).
 func rootsForSession(ctx context.Context) []string {
-	sess := server.ClientSessionFromContext(ctx)
-	if sess == nil {
-		return nil
-	}
-	// Only ask clients that declared the roots capability; otherwise the
-	// request would block on a client that never answers.
-	if info, ok := sess.(server.SessionWithClientInfo); !ok || info.GetClientCapabilities().Roots == nil {
+	ss := sessionFromContext(ctx)
+	if ss == nil {
 		return nil
 	}
 
-	sid := sess.SessionID()
+	sid := ss.ID()
 	if cached, ok := rootsCache.Load(sid); ok {
 		return cached.(rootsEntry).paths
 	}
 
-	paths, ok := fetchRoots(ctx)
+	paths, ok := fetchRoots(ctx, ss)
 	// Cache only a definitive answer (success, including a legit empty list).
 	// A transport error / timeout is left uncached so the next call retries
 	// rather than poisoning the session until a list_changed that may never come.
@@ -58,18 +52,16 @@ func rootsForSession(ctx context.Context) []string {
 
 // fetchRoots performs the roots/list round-trip (bounded by rootsTimeout) and
 // decodes the file:// URIs to local paths. The bool is false on a transport
-// error or timeout (caller should not cache it); true on a definitive answer,
-// even if the client reports zero roots.
-func fetchRoots(ctx context.Context) ([]string, bool) {
-	srv := server.ServerFromContext(ctx)
-	if srv == nil {
-		return nil, false
-	}
+// error or timeout, or a client that does not support roots (caller should not
+// cache it); true on a definitive answer, even if the client reports zero roots.
+//
+// ponytail: no capability pre-check — the SDK returns method-not-found fast for
+// clients without roots, and rootsTimeout bounds the slow case. Add a gate only
+// if a non-conforming client (declares nothing, never replies) shows up.
+func fetchRoots(ctx context.Context, ss *mcp.ServerSession) ([]string, bool) {
 	cctx, cancel := context.WithTimeout(ctx, rootsTimeout)
 	defer cancel()
-	res, err := srv.RequestRoots(cctx, mcp.ListRootsRequest{
-		Request: mcp.Request{Method: string(mcp.MethodListRoots)},
-	})
+	res, err := ss.ListRoots(cctx, &mcp.ListRootsParams{})
 	if err != nil || res == nil {
 		return nil, false
 	}
@@ -82,11 +74,11 @@ func fetchRoots(ctx context.Context) ([]string, bool) {
 	return paths, true
 }
 
-// invalidateRoots drops the cached roots for the session in ctx so the next
-// lookup re-fetches. Wired to notifications/roots/list_changed in main.go.
-func invalidateRoots(ctx context.Context) {
-	if sess := server.ClientSessionFromContext(ctx); sess != nil {
-		rootsCache.Delete(sess.SessionID())
+// invalidateRoots drops the cached roots for the session so the next lookup
+// re-fetches. Wired to notifications/roots/list_changed in main.go.
+func invalidateRoots(ss *mcp.ServerSession) {
+	if ss != nil {
+		rootsCache.Delete(ss.ID())
 	}
 }
 

@@ -10,7 +10,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/mark3labs/mcp-go/server"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 // sessionIdleTTL reaps transport state for sessions a client abandoned without
@@ -89,24 +89,19 @@ func resolveTransport(args []string) transportConfig {
 // from the X-Repo-Root (or X-Cwd) header and threaded into the request context
 // for git.go. When no header (or cwd arg) is supplied, resolution falls back to
 // the client's MCP roots (see roots.go).
-func serveHTTP(s *server.MCPServer, tc transportConfig) error {
+func serveHTTP(s *mcp.Server, tc transportConfig) error {
+	opts := &mcp.StreamableHTTPOptions{Stateless: tc.stateless}
+	if !tc.stateless {
+		opts.SessionTimeout = sessionIdleTTL
+	}
+	handler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return s }, opts)
+
 	// Own the mux so a liveness endpoint can sit alongside the MCP endpoint —
 	// proxies and orchestrators probe /healthz to decide if the backend is up.
 	mux := http.NewServeMux()
 	httpServer := &http.Server{Addr: tc.addr, Handler: mux}
 
-	opts := []server.StreamableHTTPOption{
-		server.WithStateLess(tc.stateless),
-		server.WithEndpointPath(tc.path),
-		server.WithHTTPContextFunc(httpCwdFromHeaders),
-		server.WithStreamableHTTPServer(httpServer),
-	}
-	if !tc.stateless {
-		opts = append(opts, server.WithSessionIdleTTL(sessionIdleTTL))
-	}
-	httpSrv := server.NewStreamableHTTPServer(s, opts...)
-
-	mux.Handle(tc.path, httpSrv)
+	mux.Handle(tc.path, withRepoRootHeader(handler))
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
@@ -121,7 +116,7 @@ func serveHTTP(s *server.MCPServer, tc transportConfig) error {
 		logErr("[jenkins-mcp] shutting down HTTP server")
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		_ = httpSrv.Shutdown(ctx)
+		_ = httpServer.Shutdown(ctx)
 	}()
 
 	mode := "stateful"
@@ -129,10 +124,19 @@ func serveHTTP(s *server.MCPServer, tc transportConfig) error {
 		mode = "stateless"
 	}
 	logErr("[jenkins-mcp] HTTP listening on " + tc.addr + tc.path + " (" + mode + ")")
-	if err := httpSrv.Start(tc.addr); err != nil && !errors.Is(err, http.ErrServerClosed) {
+	if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
 	return nil
+}
+
+// withRepoRootHeader lifts the caller-supplied repo root out of the request
+// headers into the request context so the SDK passes it through to tool handlers
+// and git commands run in the right working tree.
+func withRepoRootHeader(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		next.ServeHTTP(w, r.WithContext(httpCwdFromHeaders(r.Context(), r)))
+	})
 }
 
 // httpCwdFromHeaders lifts the caller-supplied repo root out of the request

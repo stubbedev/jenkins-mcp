@@ -3,13 +3,14 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"strconv"
 	"strings"
 
-	"github.com/mark3labs/mcp-go/mcp"
-	"github.com/mark3labs/mcp-go/server"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 var jenkins *JenkinsClient
@@ -33,41 +34,20 @@ func main() {
 		jenkins = NewJenkinsClient(config.URL, config.Username, config.Token, config.RepoJobMap)
 	}
 
-	s := server.NewMCPServer(
-		"jenkins-mcp", Version,
-		server.WithToolCapabilities(false),
-		server.WithInstructions(buildInstructions(config, tc.http)),
-	)
-
-	// Refresh cached client roots when the client signals they changed.
-	s.AddNotificationHandler(string(mcp.MethodNotificationRootsListChanged),
-		func(ctx context.Context, _ mcp.JSONRPCNotification) { invalidateRoots(ctx) })
-
-	for _, def := range loadToolDefs() {
-		tool := mcp.Tool{
-			Name:           def.Name,
-			Description:    def.Description,
-			RawInputSchema: def.InputSchema,
-		}
-		if a := def.Annotations; a != nil {
-			tool.Annotations = mcp.ToolAnnotation{
-				ReadOnlyHint:    a.ReadOnlyHint,
-				DestructiveHint: a.DestructiveHint,
-				IdempotentHint:  a.IdempotentHint,
-				OpenWorldHint:   a.OpenWorldHint,
-			}
-		}
-		name := def.Name
-		s.AddTool(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-			return dispatch(ctx, name, req.GetArguments())
-		})
-	}
+	s := newServer(buildInstructions(config, tc.http))
 
 	var serveErr error
 	if tc.http {
 		serveErr = serveHTTP(s, tc)
 	} else {
-		serveErr = server.ServeStdio(s)
+		serveErr = s.Run(context.Background(), &mcp.StdioTransport{})
+	}
+	// A client closing stdin (clean disconnect) surfaces from Run as io.EOF or
+	// the SDK's internal "server is closing" error (jsonrpc2.ErrServerClosing,
+	// which isn't exported, hence the string match). Either is a normal shutdown,
+	// not a fatal error.
+	if serveErr != nil && (errors.Is(serveErr, io.EOF) || strings.Contains(serveErr.Error(), "server is closing")) {
+		serveErr = nil
 	}
 	if serveErr != nil {
 		logErr("[jenkins-mcp] fatal: " + serveErr.Error())
@@ -75,12 +55,62 @@ func main() {
 	}
 }
 
+// newServer builds the MCP server: registers every tool from tools.json (raw
+// schema passed through verbatim) wired to dispatch, and the roots-changed
+// handler. Split out from main so tests can drive it over an in-memory transport.
+func newServer(instructions string) *mcp.Server {
+	s := mcp.NewServer(
+		&mcp.Implementation{Name: "jenkins-mcp", Version: Version},
+		&mcp.ServerOptions{
+			Instructions: instructions,
+			// Refresh cached client roots when the client signals they changed.
+			RootsListChangedHandler: func(_ context.Context, req *mcp.RootsListChangedRequest) {
+				invalidateRoots(req.Session)
+			},
+		},
+	)
+
+	for _, def := range loadToolDefs() {
+		tool := &mcp.Tool{
+			Name:        def.Name,
+			Description: def.Description,
+			InputSchema: json.RawMessage(def.InputSchema),
+		}
+		if a := def.Annotations; a != nil {
+			tool.Annotations = &mcp.ToolAnnotations{
+				DestructiveHint: a.DestructiveHint,
+				OpenWorldHint:   a.OpenWorldHint,
+			}
+			if a.ReadOnlyHint != nil {
+				tool.Annotations.ReadOnlyHint = *a.ReadOnlyHint
+			}
+			if a.IdempotentHint != nil {
+				tool.Annotations.IdempotentHint = *a.IdempotentHint
+			}
+		}
+		name := def.Name
+		s.AddTool(tool, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			return dispatch(ctx, req, name)
+		})
+	}
+	return s
+}
+
 // dispatch routes a tool call to the matching client method and wraps the result.
-func dispatch(ctx context.Context, name string, rawArgs map[string]any) (*mcp.CallToolResult, error) {
+func dispatch(ctx context.Context, req *mcp.CallToolRequest, name string) (*mcp.CallToolResult, error) {
 	if jenkins == nil {
-		return mcp.NewToolResultError("Jenkins is not configured. Set url + username + token in ~/.jenkins-mcp.json or via JENKINS_URL / JENKINS_USERNAME / JENKINS_TOKEN env vars."), nil
+		return toolError("Jenkins is not configured. Set url + username + token in ~/.jenkins-mcp.json or via JENKINS_URL / JENKINS_USERNAME / JENKINS_TOKEN env vars."), nil
+	}
+	var rawArgs map[string]any
+	if len(req.Params.Arguments) > 0 {
+		if err := json.Unmarshal(req.Params.Arguments, &rawArgs); err != nil {
+			return toolError("Error: invalid arguments: " + err.Error()), nil
+		}
 	}
 	args := normalizeArgs(rawArgs)
+	// The server→client round-trips (roots/list, elicitation) need the session,
+	// which the SDK passes on the request; thread it through ctx for git.go/roots.go.
+	ctx = withSession(ctx, req.Session)
 	// A per-call `cwd` (or `repoRoot`) argument overrides any header-supplied
 	// working directory, so a harness that cannot set per-request headers can
 	// still tell the server which repo/working tree to run git in.
@@ -91,9 +121,32 @@ func dispatch(ctx context.Context, name string, rawArgs map[string]any) (*mcp.Ca
 	}
 	out, err := runTool(ctx, name, args)
 	if err != nil {
-		return mcp.NewToolResultError("Error: " + err.Error()), nil
+		return toolError("Error: " + err.Error()), nil
 	}
-	return mcp.NewToolResultText(out), nil
+	return toolText(out), nil
+}
+
+// toolText / toolError build a tools/call result. Tool-level errors are reported
+// in the result (IsError) so the model sees them, not as protocol errors.
+func toolText(s string) *mcp.CallToolResult {
+	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: s}}}
+}
+
+func toolError(s string) *mcp.CallToolResult {
+	return &mcp.CallToolResult{IsError: true, Content: []mcp.Content{&mcp.TextContent{Text: s}}}
+}
+
+// sessionKey carries the per-call ServerSession through context so roots.go and
+// elicitJobPath can make server→client requests without changing every signature.
+type sessionKey struct{}
+
+func withSession(ctx context.Context, ss *mcp.ServerSession) context.Context {
+	return context.WithValue(ctx, sessionKey{}, ss)
+}
+
+func sessionFromContext(ctx context.Context) *mcp.ServerSession {
+	ss, _ := ctx.Value(sessionKey{}).(*mcp.ServerSession)
+	return ss
 }
 
 func runTool(ctx context.Context, name string, args map[string]any) (string, error) {
@@ -277,14 +330,14 @@ func resolveJobMatches(ctx context.Context) ([]string, error) {
 // elicitation prompt. Returns (picked, true) only when the user accepts a valid
 // choice; any error, decline, cancel, or unsupported client yields ("", false).
 func elicitJobPath(ctx context.Context, matches []string) (string, bool) {
-	srv := server.ServerFromContext(ctx)
-	if srv == nil {
+	ss := sessionFromContext(ctx)
+	if ss == nil {
 		return "", false
 	}
 	// Only send an elicitation if the client declared support for it. Without
 	// this gate the stdio session would send the request and block forever
 	// waiting on a client that never replies.
-	if sess, ok := server.ClientSessionFromContext(ctx).(server.SessionWithClientInfo); !ok || sess.GetClientCapabilities().Elicitation == nil {
+	if ip := ss.InitializeParams(); ip == nil || ip.Capabilities == nil || ip.Capabilities.Elicitation == nil {
 		return "", false
 	}
 	schema := map[string]any{
@@ -299,21 +352,14 @@ func elicitJobPath(ctx context.Context, matches []string) (string, bool) {
 		},
 		"required": []string{"jobPath"},
 	}
-	res, err := srv.RequestElicitation(ctx, mcp.ElicitationRequest{
-		Request: mcp.Request{Method: string(mcp.MethodElicitationCreate)},
-		Params: mcp.ElicitationParams{
-			Message:         "Multiple Jenkins jobs map to this repo. Which one?",
-			RequestedSchema: schema,
-		},
+	res, err := ss.Elicit(ctx, &mcp.ElicitParams{
+		Message:         "Multiple Jenkins jobs map to this repo. Which one?",
+		RequestedSchema: schema,
 	})
-	if err != nil || res == nil || res.Action != mcp.ElicitationResponseActionAccept {
+	if err != nil || res == nil || res.Action != "accept" {
 		return "", false
 	}
-	content, ok := res.Content.(map[string]any)
-	if !ok {
-		return "", false
-	}
-	picked, ok := content["jobPath"].(string)
+	picked, ok := res.Content["jobPath"].(string)
 	if !ok || picked == "" {
 		return "", false
 	}

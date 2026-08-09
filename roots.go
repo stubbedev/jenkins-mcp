@@ -57,8 +57,14 @@ func rootsForSession(ctx context.Context) []string {
 //
 // ponytail: no capability pre-check — the SDK returns method-not-found fast for
 // clients without roots, and rootsTimeout bounds the slow case. Add a gate only
-// if a non-conforming client (declares nothing, never replies) shows up.
+// if a non-conforming client (declares nothing, never replies) shows up. The
+// protocol-version check below is not that gate: from MCP 2026-07-28 the call
+// is refused locally by the SDK, so there is nothing to ask and nothing worth
+// caching — those clients pin the workspace with X-Repo-Root instead.
 func fetchRoots(ctx context.Context, ss *mcp.ServerSession) ([]string, bool) {
+	if !rootsAskable(ss) {
+		return nil, false
+	}
 	cctx, cancel := context.WithTimeout(ctx, rootsTimeout)
 	defer cancel()
 	res, err := ss.ListRoots(cctx, &mcp.ListRootsParams{})
@@ -96,4 +102,24 @@ func fileURIToPath(uri string) string {
 		return ""
 	}
 	return u.Path
+}
+
+// rootsRemovedFrom is the first protocol revision that forbids server-initiated
+// JSON-RPC requests (SEP-2322 / SEP-2575): from there on a server cannot ask a
+// client for its roots at all. ISO dates compare correctly as strings.
+const rootsRemovedFrom = "2026-07-28"
+
+// rootsAskable reports whether roots/list may still be sent on this session.
+func rootsAskable(ss *mcp.ServerSession) bool {
+	if ss == nil {
+		return false
+	}
+	return protocolAllowsRoots(ss.InitializeParams())
+}
+
+// protocolAllowsRoots is rootsAskable's decision, split out so it can be tested
+// without a live session. A nil InitializeParams means the session has not
+// finished initializing; asking then is pointless either way.
+func protocolAllowsRoots(ip *mcp.InitializeParams) bool {
+	return ip != nil && ip.ProtocolVersion < rootsRemovedFrom
 }

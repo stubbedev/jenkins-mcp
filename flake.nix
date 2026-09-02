@@ -22,7 +22,7 @@
           # cleanSource keeps .git, result symlinks, and node_modules out of the
           # build sandbox; buildGoModule only needs the Go sources + go.mod/sum.
           src = pkgs.lib.cleanSource ./.;
-          vendorHash = "sha256-peWVDXO27uWogOv6bQEGlDI23aiKJsWQI7df84eOJNg=";
+          vendorHash = "sha256-D+Eqn+iejoUbDsSOwyXhoQqBcalRVC6r1PZFAQn7R4U=";
           # Version is embedded from package.json at compile time (see version.go),
           # so no -X ldflag is needed to set it.
           ldflags = [

@@ -42,6 +42,8 @@ jobs:
         with:
           extra_nix_config: |
             experimental-features = nix-command flakes
+            extra-substituters = https://nix.stubbe.dev/c/default/default
+            extra-trusted-public-keys = default:6uWvXutL9cXjV3lii+Ur5ff+ArQoG4kMBKNXWrIxhHg=
       - name: Build flake
         run: nix build .#default -L --print-out-paths | tee /tmp/outpaths
 
@@ -59,7 +61,7 @@ jobs:
           token: ${{ secrets.XILO_TOKEN }}
 
       - name: Push to xilo
-        # Best-effort: a cache-push failure must not redden master CI.
+        # A failed push is not swallowed: it would leave every consumer
+        # rebuilding from source, so the step fails the job.
         if: env.XILO_TOKEN != '' && github.event_name == 'push' && github.ref == 'refs/heads/master'
-        continue-on-error: true
         run: xilo push default $(cat /tmp/outpaths)

@@ -33,7 +33,7 @@ jobs:
       - name: Composer package
         run: |
           composer validate --strict
-          php -l bin/jenkins-mcp
+          for f in bin/jenkins-mcp src/*.php; do php -l "$f"; done
 
   nix:
     name: Nix flake build

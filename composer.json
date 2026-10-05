@@ -1,7 +1,7 @@
 {
     "name": "stubbedev/jenkins-mcp",
     "description": "MCP server for Jenkins build status and logs (Go, distributed as a prebuilt binary)",
-    "type": "library",
+    "type": "composer-plugin",
     "license": "MIT",
     "keywords": ["mcp", "jenkins", "ci", "model-context-protocol"],
     "homepage": "https://github.com/stubbedev/jenkins-mcp#readme",
@@ -10,11 +10,22 @@
         "source": "https://github.com/stubbedev/jenkins-mcp"
     },
     "require": {
-        "php": ">=8.1"
+        "php": ">=8.1",
+        "composer-plugin-api": "^2.0"
     },
     "suggest": {
         "ext-curl": "Downloads the binary on first run; without it allow_url_fopen + openssl are used",
-        "ext-pcntl": "Lets the launcher exec the binary in place instead of running it as a child"
+        "ext-pcntl": "Lets bin/jenkins-mcp exec the binary in place instead of running it as a child"
     },
-    "bin": ["bin/jenkins-mcp"]
+    "bin": [
+        "bin/jenkins-mcp"
+    ],
+    "autoload": {
+        "psr-4": {
+            "Stubbedev\\JenkinsMcp\\": "src/"
+        }
+    },
+    "extra": {
+        "class": "Stubbedev\\JenkinsMcp\\ComposerPlugin"
+    }
 }

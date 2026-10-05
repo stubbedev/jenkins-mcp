@@ -93,8 +93,8 @@ Pick whichever package manager you already have. All of them install the same bi
 |---|---|---|
 | **npx** (Node 24+) | nothing, fetched on first run | `npx -y @stubbedev/jenkins-mcp@latest` |
 | **npm global** (Node 24+) | `npm install -g @stubbedev/jenkins-mcp` | `jenkins-mcp` |
-| **Composer** (PHP 8.1+) | `composer global require stubbedev/jenkins-mcp` | `jenkins-mcp` (in Composer's global bin dir) |
-| **Composer, per project** | `composer require --dev stubbedev/jenkins-mcp` | `vendor/bin/jenkins-mcp` |
+| **Composer** (PHP 8.1+) | `composer global require stubbedev/jenkins-mcp` | the native binary it downloads — see [Composer](#composer) |
+| **Composer, per project** | `composer require --dev stubbedev/jenkins-mcp` | `vendor/stubbedev/jenkins-mcp/bin/jenkins-mcp-native` |
 | **Prebuilt binary** | download `jenkins-mcp_<os>_<arch>` from the [latest release](https://github.com/stubbedev/jenkins-mcp/releases/latest) | path to that file |
 | **Go** | `go install github.com/stubbedev/jenkins-mcp@latest` | `jenkins-mcp` (in `$GOBIN`) |
 | **Nix** | `nix profile install github:stubbedev/jenkins-mcp` | `jenkins-mcp` |
@@ -114,18 +114,36 @@ npm install -g @stubbedev/jenkins-mcp                               # or install
 
 #### Composer
 
-The Composer package `stubbedev/jenkins-mcp` is for PHP projects, or machines with PHP but no Node:
+The Composer package `stubbedev/jenkins-mcp` is for PHP projects, or machines with PHP but no Node.
+It is a Composer plugin: on `composer install` / `update` it downloads the prebuilt binary for your OS
+and architecture (the same 14 targets as npm), from the release matching the installed version, so a
+pinned version pins the binary. Your MCP client then runs that native binary directly, and PHP is
+never in the request path:
 
 ```bash
-composer global require stubbedev/jenkins-mcp     # per user → $(composer global config bin-dir --absolute)/jenkins-mcp
-composer require --dev stubbedev/jenkins-mcp      # per project → vendor/bin/jenkins-mcp
+composer require --dev stubbedev/jenkins-mcp      # per project
+composer global require stubbedev/jenkins-mcp     # per user
 ```
 
-Composer does not run install hooks for dependencies, so the launcher downloads the binary for your
-platform from the matching GitHub release the first time it runs. That needs `ext-curl` or
-`allow_url_fopen`. Run the launcher once after you install or update (`jenkins-mcp </dev/null`) so
-your MCP client does not wait on the download. Clients start the server from their own working
-directory, so give a per-project install as an absolute path (`$PWD/vendor/bin/jenkins-mcp`).
+Composer asks once whether to trust the plugin. For non-interactive installs (CI, provisioning),
+allow it up front:
+
+```bash
+composer config allow-plugins.stubbedev/jenkins-mcp true          # per project
+composer global config allow-plugins.stubbedev/jenkins-mcp true   # per user
+```
+
+The install prints the binary's path. Point your client at it:
+
+| Install | Native binary (no PHP at runtime) | PHP launcher |
+|---|---|---|
+| per project | `vendor/stubbedev/jenkins-mcp/bin/jenkins-mcp-native` | `vendor/bin/jenkins-mcp` |
+| per user | `$(composer global config home)/vendor/stubbedev/jenkins-mcp/bin/jenkins-mcp-native` | `$(composer global config bin-dir --absolute)/jenkins-mcp` |
+
+On Windows the binary is `jenkins-mcp-native.exe`. The PHP launcher works even if you declined the
+plugin: it downloads the binary on its first run (needs `ext-curl` or `allow_url_fopen`), then hands
+over to it. Clients start the server from their own working directory, so use absolute paths. Set
+`JENKINS_MCP_SKIP_DOWNLOAD=1` to skip the install-time download.
 
 #### Standalone binary (Go, Nix, release download)
 
@@ -153,7 +171,7 @@ system/home configuration. It builds from source with `buildGoModule`; its versi
 
 Each example shows the `npx` form first, then the form for an installed `jenkins-mcp` (npm global,
 Composer, Go, Nix or a release binary). With a per-project Composer install, use the absolute path to
-`vendor/bin/jenkins-mcp` as the command.
+`vendor/stubbedev/jenkins-mcp/bin/jenkins-mcp-native` as the command.
 
 ---
 
@@ -167,10 +185,10 @@ claude mcp add jenkins -- npx -y @stubbedev/jenkins-mcp@latest --config ~/.jenki
 claude mcp add jenkins -- "$(which jenkins-mcp)" --config ~/.jenkins-mcp.json
 
 # Composer (global)
-claude mcp add jenkins -- "$(composer global config bin-dir --absolute)/jenkins-mcp" --config ~/.jenkins-mcp.json
+claude mcp add jenkins -- "$(composer global config home)/vendor/stubbedev/jenkins-mcp/bin/jenkins-mcp-native" --config ~/.jenkins-mcp.json
 
 # Composer (per project, run from the project root)
-claude mcp add jenkins -- "$PWD/vendor/bin/jenkins-mcp" --config ~/.jenkins-mcp.json
+claude mcp add jenkins -- "$PWD/vendor/stubbedev/jenkins-mcp/bin/jenkins-mcp-native" --config ~/.jenkins-mcp.json
 ```
 
 ---
@@ -465,4 +483,4 @@ printf '%s\n' \
   '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}' | ./jenkins-mcp
 ```
 
-Tool schemas live in `tools.json` (embedded into the binary via `go:embed`). The npm wrapper lives in `bin/cli.mjs` + `scripts/`; the Composer launcher is `bin/jenkins-mcp` (PHP). Both download the release binary to `bin/jenkins-mcp-native`. The Nix flake is `flake.nix`.
+Tool schemas live in `tools.json` (embedded into the binary via `go:embed`). The npm wrapper lives in `bin/cli.mjs` + `scripts/`; the Composer plugin is `src/ComposerPlugin.php`, with the launcher `bin/jenkins-mcp` (PHP) and the download logic both share in `src/Binary.php`. All of them download the release binary to `bin/jenkins-mcp-native`. The Nix flake is `flake.nix`.

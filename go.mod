@@ -5,7 +5,7 @@ go 1.26
 require (
 	github.com/beevik/etree v1.8.1
 	github.com/modelcontextprotocol/go-sdk v1.8.0
-	github.com/toon-format/toon-go v0.0.0-20251202084852-7ca0e27c4e8c
+	github.com/toon-format/toon-go v0.1.0
 )
 
 require (

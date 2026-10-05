@@ -29,6 +29,12 @@ jobs:
       - name: Build
         run: go build -o jenkins-mcp .
 
+      # The Composer launcher only runs on users' machines, so lint it here.
+      - name: Composer package
+        run: |
+          composer validate --strict
+          php -l bin/jenkins-mcp
+
   nix:
     name: Nix flake build
     runs-on: ubuntu-latest

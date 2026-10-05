@@ -2,7 +2,7 @@
 
 A [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server for **Jenkins**, written in Go. Inspect builds, control jobs, and manage pipeline configuration — designed to pair with [`atlassian-mcp`](https://github.com/stubbedev/atlassian-mcp) so you can ask "did the build pass?" alongside Jira and Bitbucket questions.
 
-Distributed three ways — all from the same source: a zero-Node **prebuilt binary** (`go install` or a release download), an **npm wrapper** (`npx @stubbedev/jenkins-mcp`) that fetches the matching binary so every config below works unchanged, and a **Nix flake** (`nix run github:stubbedev/jenkins-mcp`).
+Every install option runs the same single static Go binary: **npm** (`npx @stubbedev/jenkins-mcp`), **Composer** (`composer global require stubbedev/jenkins-mcp`), a **prebuilt binary** (`go install` or a release download), or a **Nix flake** (`nix run github:stubbedev/jenkins-mcp`). See [Install](#3-install).
 
 ---
 
@@ -85,16 +85,92 @@ JENKINS_TOKEN=your-api-token
 
 Config is resolved in this order: `--config <path>` CLI arg → `JENKINS_MCP_CONFIG` env var → `~/.jenkins-mcp.json` → `$XDG_CONFIG_HOME/jenkins-mcp/config.json` (default `~/.config/jenkins-mcp/config.json`) → `.jenkins-mcp.json` in cwd → environment variables.
 
-### 3. Connect to your AI tool
+### 3. Install
 
-No cloning or building required — point your tool at `npx @stubbedev/jenkins-mcp@latest` and it will install and run automatically.
+Pick whichever package manager you already have. All of them install the same binary:
+
+| Option | Install | Command for your MCP client |
+|---|---|---|
+| **npx** (Node 24+) | nothing, fetched on first run | `npx -y @stubbedev/jenkins-mcp@latest` |
+| **npm global** (Node 24+) | `npm install -g @stubbedev/jenkins-mcp` | `jenkins-mcp` |
+| **Composer** (PHP 8.1+) | `composer global require stubbedev/jenkins-mcp` | `jenkins-mcp` (in Composer's global bin dir) |
+| **Composer, per project** | `composer require --dev stubbedev/jenkins-mcp` | `vendor/bin/jenkins-mcp` |
+| **Prebuilt binary** | download `jenkins-mcp_<os>_<arch>` from the [latest release](https://github.com/stubbedev/jenkins-mcp/releases/latest) | path to that file |
+| **Go** | `go install github.com/stubbedev/jenkins-mcp@latest` | `jenkins-mcp` (in `$GOBIN`) |
+| **Nix** | `nix profile install github:stubbedev/jenkins-mcp` | `jenkins-mcp` |
+
+MCP clients often start servers without your shell's `PATH`, so an absolute path is the safest
+command for any installed option (`which jenkins-mcp`).
+
+#### npm / npx
+
+`npx` downloads the package and the prebuilt binary for your platform on first run, so there is
+nothing to install up front. `npm install -g` does the same once and puts `jenkins-mcp` on your `PATH`.
+
+```bash
+npx -y @stubbedev/jenkins-mcp@latest --config ~/.jenkins-mcp.json   # run without installing
+npm install -g @stubbedev/jenkins-mcp                               # or install globally → jenkins-mcp
+```
+
+#### Composer
+
+The Composer package `stubbedev/jenkins-mcp` is for PHP projects, or machines with PHP but no Node:
+
+```bash
+composer global require stubbedev/jenkins-mcp     # per user → $(composer global config bin-dir --absolute)/jenkins-mcp
+composer require --dev stubbedev/jenkins-mcp      # per project → vendor/bin/jenkins-mcp
+```
+
+Composer does not run install hooks for dependencies, so the launcher downloads the binary for your
+platform from the matching GitHub release the first time it runs. That needs `ext-curl` or
+`allow_url_fopen`. Run the launcher once after you install or update (`jenkins-mcp </dev/null`) so
+your MCP client does not wait on the download. Clients start the server from their own working
+directory, so give a per-project install as an absolute path (`$PWD/vendor/bin/jenkins-mcp`).
+
+#### Standalone binary (Go, Nix, release download)
+
+```bash
+go install github.com/stubbedev/jenkins-mcp@latest                    # → $GOBIN / $GOPATH/bin
+nix run github:stubbedev/jenkins-mcp -- --config ~/.jenkins-mcp.json  # run straight from the flake
+```
+
+Or download `jenkins-mcp_<os>_<arch>` from the
+[latest release](https://github.com/stubbedev/jenkins-mcp/releases/latest), then `chmod +x` it
+(macOS/Linux/FreeBSD). The Nix flake can also be added as an input, using `packages.default` in your
+system/home configuration. It builds from source with `buildGoModule`; its version tracks
+`package.json` automatically and CI keeps the `vendorHash` current.
+
+#### Updating
+
+| Option | Update |
+|---|---|
+| npx | `npx clear-npx-cache`, then restart your MCP client |
+| npm global | `npm update -g @stubbedev/jenkins-mcp` |
+| Composer | `composer global update stubbedev/jenkins-mcp` (or `composer update stubbedev/jenkins-mcp` in the project) |
+| Go / Nix / binary | re-run the install command or download the newer release |
+
+### 4. Connect to your AI tool
+
+Each example shows the `npx` form first, then the form for an installed `jenkins-mcp` (npm global,
+Composer, Go, Nix or a release binary). With a per-project Composer install, use the absolute path to
+`vendor/bin/jenkins-mcp` as the command.
 
 ---
 
 #### Claude Code
 
 ```bash
+# npx
 claude mcp add jenkins -- npx -y @stubbedev/jenkins-mcp@latest --config ~/.jenkins-mcp.json
+
+# installed (npm -g / Go / Nix / release binary)
+claude mcp add jenkins -- "$(which jenkins-mcp)" --config ~/.jenkins-mcp.json
+
+# Composer (global)
+claude mcp add jenkins -- "$(composer global config bin-dir --absolute)/jenkins-mcp" --config ~/.jenkins-mcp.json
+
+# Composer (per project, run from the project root)
+claude mcp add jenkins -- "$PWD/vendor/bin/jenkins-mcp" --config ~/.jenkins-mcp.json
 ```
 
 ---
@@ -114,6 +190,20 @@ Add to `~/.cursor/mcp.json` (global) or `.cursor/mcp.json` (project-only):
 }
 ```
 
+Installed via npm global, Composer, Go, Nix or a release binary, point `command` at the binary
+(`which jenkins-mcp`, or `vendor/bin/jenkins-mcp` for a per-project Composer install):
+
+```json
+{
+  "mcpServers": {
+    "jenkins": {
+      "command": "/Users/you/.composer/vendor/bin/jenkins-mcp",
+      "args": ["--config", "/Users/you/.jenkins-mcp.json"]
+    }
+  }
+}
+```
+
 ---
 
 #### Windsurf
@@ -126,6 +216,20 @@ Add to `~/.codeium/windsurf/mcp_config.json`:
     "jenkins": {
       "command": "npx",
       "args": ["-y", "@stubbedev/jenkins-mcp@latest", "--config", "/Users/you/.jenkins-mcp.json"]
+    }
+  }
+}
+```
+
+Installed via npm global, Composer, Go, Nix or a release binary, point `command` at the binary
+(`which jenkins-mcp`, or `vendor/bin/jenkins-mcp` for a per-project Composer install):
+
+```json
+{
+  "mcpServers": {
+    "jenkins": {
+      "command": "/Users/you/.composer/vendor/bin/jenkins-mcp",
+      "args": ["--config", "/Users/you/.jenkins-mcp.json"]
     }
   }
 }
@@ -150,6 +254,21 @@ Add to `~/.config/zed/settings.json`:
 }
 ```
 
+Installed via npm global, Composer, Go, Nix or a release binary:
+
+```json
+{
+  "context_servers": {
+    "jenkins": {
+      "command": {
+        "path": "/home/you/.config/composer/vendor/bin/jenkins-mcp",
+        "args": ["--config", "/home/you/.jenkins-mcp.json"]
+      }
+    }
+  }
+}
+```
+
 ---
 
 #### OpenCode
@@ -163,6 +282,20 @@ Add to `opencode.json` in your project root (or `~/.config/opencode/opencode.jso
     "jenkins": {
       "type": "local",
       "command": ["npx", "-y", "@stubbedev/jenkins-mcp@latest", "--config", "/home/you/.jenkins-mcp.json"]
+    }
+  }
+}
+```
+
+Installed via npm global, Composer, Go, Nix or a release binary:
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "jenkins": {
+      "type": "local",
+      "command": ["/home/you/.config/composer/vendor/bin/jenkins-mcp", "--config", "/home/you/.jenkins-mcp.json"]
     }
   }
 }
@@ -185,51 +318,22 @@ mcpServers:
       - /home/you/.jenkins-mcp.json
 ```
 
----
+Installed via npm global, Composer, Go, Nix or a release binary:
 
-#### Go install (no Node)
-
-If you have Go installed and prefer a native binary on your `PATH`:
-
-```bash
-go install github.com/stubbedev/jenkins-mcp@latest
+```yaml
+mcpServers:
+  jenkins:
+    command: /home/you/.config/composer/vendor/bin/jenkins-mcp
+    args:
+      - --config
+      - /home/you/.jenkins-mcp.json
 ```
-
-Then point your MCP client at the `jenkins-mcp` command directly, e.g. for Claude Code:
-
-```bash
-claude mcp add jenkins -- jenkins-mcp --config ~/.jenkins-mcp.json
-```
-
-Prebuilt binaries for every platform are also attached to each [GitHub release](https://github.com/stubbedev/jenkins-mcp/releases) if you'd rather not build.
-
----
-
-#### Nix (NixOS / nix-darwin / home-manager)
-
-Run it straight from the flake — no clone, no install:
-
-```bash
-nix run github:stubbedev/jenkins-mcp -- --config ~/.jenkins-mcp.json
-```
-
-Or reference it in your MCP client config with that command, or add the flake as an input and use `packages.default` in your system/home configuration. The flake builds from source with `buildGoModule`; its version tracks `package.json` automatically and CI keeps the `vendorHash` current.
 
 ---
 
 #### Any other MCP-compatible tool
 
-Most tools that support MCP accept the same JSON format. Use `npx` as the command with `["-y", "@stubbedev/jenkins-mcp@latest", "--config", "/path/to/config.json"]` as the args — or the `jenkins-mcp` binary directly.
-
-### Updating existing installs
-
-If your MCP client is already configured and you want the newest package version:
-
-```bash
-npx clear-npx-cache
-```
-
-Then restart your MCP client.
+Most tools that support MCP accept the same JSON format. Use `npx` as the command with `["-y", "@stubbedev/jenkins-mcp@latest", "--config", "/path/to/config.json"]` as the args, or the installed `jenkins-mcp` (absolute path) as the command with `["--config", "/path/to/config.json"]`.
 
 ---
 
@@ -243,7 +347,7 @@ cd jenkins-mcp
 go build -o jenkins-mcp .
 ```
 
-Then use `/path/to/jenkins-mcp/jenkins-mcp` instead of the `npx` command in the configs above.
+Then use `/path/to/jenkins-mcp/jenkins-mcp` as the command in the configs above.
 
 ---
 
@@ -310,7 +414,7 @@ If none of these yields a repo (e.g. stateless mode with no header, or no root m
 
 ## Releases (Maintainers)
 
-Each release ships **both** prebuilt Go binaries (attached to the GitHub release) and the npm wrapper `@stubbedev/jenkins-mcp`. `.github/workflows/publish.yml` runs on a pushed `v*` tag and: cross-compiles binaries for 14 targets — linux (amd64, arm64, arm/v7, 386, ppc64le, s390x, riscv64), darwin (amd64, arm64), windows (amd64, arm64, 386), and freebsd (amd64, arm64) — attaches them to the GitHub release, then publishes the npm package. The Nix flake builds from the tagged source and tracks `package.json` for its version, so it needs no separate release step.
+Each release ships prebuilt Go binaries (attached to the GitHub release), the npm wrapper `@stubbedev/jenkins-mcp`, and the Composer package `stubbedev/jenkins-mcp`. `.github/workflows/publish.yml` runs on a pushed `v*` tag and: cross-compiles binaries for 14 targets — linux (amd64, arm64, arm/v7, 386, ppc64le, s390x, riscv64), darwin (amd64, arm64), windows (amd64, arm64, 386), and freebsd (amd64, arm64) — attaches them to the GitHub release, then publishes the npm package. The Nix flake builds from the tagged source and tracks `package.json` for its version, so it needs no separate release step.
 
 Use semantic versioning. Breaking tool-surface changes should bump the minor version while `<1.0.0` (for example `0.0.x` -> `0.1.0`).
 
@@ -329,6 +433,11 @@ This bumps `package.json`, commits, tags, and pushes; the pushed tag drives the 
 Required npm setup (one-time):
 
 - In npm package settings, add this GitHub repo/workflow as a Trusted Publisher
+
+Packagist needs no workflow step: it reads `composer.json` straight from each pushed `v*` tag (no
+`version` field, since the tag is the version, and the launcher reads `package.json` to pick the
+release binary). One-time setup: submit the repo at <https://packagist.org/packages/submit> and keep
+the Packagist GitHub integration enabled so new tags are picked up automatically.
 
 ---
 
@@ -356,4 +465,4 @@ printf '%s\n' \
   '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}' | ./jenkins-mcp
 ```
 
-Tool schemas live in `tools.json` (embedded into the binary via `go:embed`). The npm wrapper lives in `bin/cli.mjs` + `scripts/`. The Nix flake is `flake.nix`.
+Tool schemas live in `tools.json` (embedded into the binary via `go:embed`). The npm wrapper lives in `bin/cli.mjs` + `scripts/`; the Composer launcher is `bin/jenkins-mcp` (PHP). Both download the release binary to `bin/jenkins-mcp-native`. The Nix flake is `flake.nix`.

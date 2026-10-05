@@ -50,7 +50,7 @@ function binDir() {
 
 function binPath() {
   const { ext } = target();
-  return join(binDir(), `jenkins-mcp${ext}`);
+  return join(binDir(), `jenkins-mcp-native${ext}`);
 }
 
 async function fileExists(p) {

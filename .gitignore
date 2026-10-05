@@ -5,8 +5,7 @@ node_modules/
 dist/
 /jenkins-mcp
 /jenkins-mcp.exe
-/bin/jenkins-mcp
-/bin/jenkins-mcp.exe
+/bin/jenkins-mcp-native*
 result
 
 # config & secrets

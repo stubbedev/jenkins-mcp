@@ -16,13 +16,13 @@
         # bump propagates here automatically — the flake never needs hand-editing
         # on release. Only vendorHash changes, and only when Go deps change.
         version = (builtins.fromJSON (builtins.readFile ./package.json)).version;
-        jenkins-mcp = pkgs.buildGoModule {
+        jenkins-mcp = pkgs.buildGo127Module {
           pname = "jenkins-mcp";
           inherit version;
           # cleanSource keeps .git, result symlinks, and node_modules out of the
           # build sandbox; buildGoModule only needs the Go sources + go.mod/sum.
           src = pkgs.lib.cleanSource ./.;
-          vendorHash = "sha256-ZCZmMZyvEW9iE8Z6fD0hxIFkiCySFAi4AQI9lGMJJ78=";
+          vendorHash = "sha256-Cvbb93LjVecHRFX4kJ1urHw6qQiU53cKqcYhKXLVnDs=";
           # Version is embedded from package.json at compile time (see version.go),
           # so no -X ldflag is needed to set it.
           ldflags = [
@@ -41,7 +41,7 @@
         packages.default = jenkins-mcp;
         packages.jenkins-mcp = jenkins-mcp;
         apps.default = flake-utils.lib.mkApp { drv = jenkins-mcp; };
-        devShells.default = pkgs.mkShell { packages = [ pkgs.go ]; };
+        devShells.default = pkgs.mkShell { packages = [ pkgs.go_1_27 ]; };
       }
     );
 }

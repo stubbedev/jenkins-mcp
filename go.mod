@@ -7,7 +7,7 @@ toolchain go1.27.2
 require (
 	github.com/beevik/etree v1.8.1
 	github.com/modelcontextprotocol/go-sdk v1.8.0
-	github.com/toon-format/toon-go v0.1.0
+	github.com/toon-format/toon-go v1.0.1
 )
 
 require (

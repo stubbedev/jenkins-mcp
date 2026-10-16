@@ -289,6 +289,37 @@
     }
   },
   {
+    "name": "jenkins_build_revision",
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": true
+    },
+    "description": "Build an exact commit on every Git-plugin job that uses the repository, via the Git plugin's /git/notifyCommit endpoint with sha1=. Use for freestyle jobs with a wildcard branch spec and no parameters, where jenkins_trigger_build rebuilds the last built revision instead of the commit you want. Defaults to the current repo's origin remote, branch and HEAD. A job only reacts when it has \"Poll SCM\" enabled (an empty schedule is fine) and a branch spec matching the branch. Returns the jobs Jenkins scheduled; follow up with jenkins_get_build sha=<sha>.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "url": {
+          "type": "string",
+          "description": "Git remote URL the jobs are configured with. Default: the current repo's origin remote."
+        },
+        "branch": {
+          "type": "string",
+          "description": "Branch name, matched against each job's branch spec. Default: the current branch when sha is omitted; no branch filter when sha is given."
+        },
+        "sha": {
+          "type": "string",
+          "description": "Commit to build: a full 40-char SHA, or any revision git can resolve in the working tree (short SHA, HEAD~1, a branch). Default: HEAD."
+        },
+        "cwd": {
+          "type": "string",
+          "description": "Working directory (repo root) to run git in when url, branch or sha must be resolved from the working tree. Use in HTTP mode where the server has no checkout of its own. `repoRoot` is accepted as an alias."
+        }
+      }
+    }
+  },
+  {
     "name": "jenkins_get_job_config",
     "annotations": {
       "readOnlyHint": true,

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strconv"
 	"strings"
 	"testing"
@@ -170,5 +171,98 @@ func TestErrorStatusFormatting(t *testing.T) {
 	}
 	if !isStatus(err, 404) {
 		t.Errorf("expected typed 404, got: %v", err)
+	}
+}
+
+func TestBuildRevisionNotifiesCommit(t *testing.T) {
+	var got url.Values
+	mux := http.NewServeMux()
+	mux.HandleFunc("/git/notifyCommit", func(w http.ResponseWriter, r *http.Request) {
+		got = r.URL.Query()
+		fmt.Fprint(w, "Scheduled Kontainer\nNo Git consumers using SCM API plugin for: https://git.example.com/k.git\n")
+	})
+	c, srv := newTestClient(mux)
+	defer srv.Close()
+	c.notifyCommitToken = "secret"
+
+	sha := "d05eb5e4d05eb5e4d05eb5e4d05eb5e4d05eb5e4"
+	out, err := c.buildRevisionTool(context.Background(), "https://git.example.com/k.git", "feature/x", sha)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := url.Values{"url": {"https://git.example.com/k.git"}, "branches": {"feature/x"}, "sha1": {sha}, "token": {"secret"}}
+	if got.Encode() != want.Encode() {
+		t.Errorf("query = %s, want %s", got.Encode(), want.Encode())
+	}
+	for _, s := range []string{"Scheduled 1 job(s)", "- Kontainer", "jenkins_get_build sha=" + sha} {
+		if !strings.Contains(out, s) {
+			t.Errorf("output missing %q:\n%s", s, out)
+		}
+	}
+}
+
+func TestBuildRevisionOmitsEmptyBranchAndToken(t *testing.T) {
+	var got url.Values
+	mux := http.NewServeMux()
+	mux.HandleFunc("/git/notifyCommit", func(w http.ResponseWriter, r *http.Request) {
+		got = r.URL.Query()
+		fmt.Fprint(w, "Scheduled a » b\n")
+	})
+	c, srv := newTestClient(mux)
+	defer srv.Close()
+
+	if _, err := c.buildRevisionTool(context.Background(), "git@host:r.git", "", strings.Repeat("a", 40)); err != nil {
+		t.Fatal(err)
+	}
+	if got.Has("branches") || got.Has("token") {
+		t.Errorf("empty branch/token should be omitted, got %s", got.Encode())
+	}
+}
+
+func TestBuildRevisionNothingScheduled(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/git/notifyCommit", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, "No git jobs using repository: git@host:r.git and branches: main\n")
+	})
+	c, srv := newTestClient(mux)
+	defer srv.Close()
+
+	_, err := c.buildRevisionTool(context.Background(), "git@host:r.git", "main", strings.Repeat("a", 40))
+	if err == nil || !strings.Contains(err.Error(), "No git jobs using repository") || !strings.Contains(err.Error(), "Poll SCM") {
+		t.Errorf("want no-jobs error with polling hint, got %v", err)
+	}
+}
+
+func TestBuildRevisionTokenRequired(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/git/notifyCommit", func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "An access token is required. Please refer to Git plugin documentation for details.", http.StatusUnauthorized)
+	})
+	c, srv := newTestClient(mux)
+	defer srv.Close()
+
+	_, err := c.buildRevisionTool(context.Background(), "git@host:r.git", "", strings.Repeat("a", 40))
+	if !isStatus(err, 401) {
+		t.Fatalf("want typed 401, got %v", err)
+	}
+	for _, s := range []string{"An access token is required", "notifyCommitToken", "Git plugin notifyCommit access tokens"} {
+		if !strings.Contains(err.Error(), s) {
+			t.Errorf("error missing %q: %v", s, err)
+		}
+	}
+
+	c.notifyCommitToken = "leaky"
+	_, err = c.buildRevisionTool(context.Background(), "git@host:r.git", "", strings.Repeat("a", 40))
+	if err == nil || strings.Contains(err.Error(), "leaky") || !strings.Contains(err.Error(), "rejected the configured notifyCommitToken") {
+		t.Errorf("want rejected-token error without the token, got %v", err)
+	}
+}
+
+func TestBuildRevisionNetworkErrorHidesToken(t *testing.T) {
+	c := NewJenkinsClient("http://127.0.0.1:1", "u", "t", nil)
+	c.notifyCommitToken = "leaky"
+	_, err := c.buildRevisionTool(context.Background(), "git@host:r.git", "", strings.Repeat("a", 40))
+	if err == nil || strings.Contains(err.Error(), "leaky") {
+		t.Errorf("want network error without the token, got %v", err)
 	}
 }

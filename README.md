@@ -24,6 +24,7 @@ Every install option runs the same single static Go binary: **npm** (`npx @stubb
 | Tool | Description |
 |---|---|
 | `jenkins_trigger_build` | Trigger a new build, optionally with parameters. Returns a queue item URL to track progress. |
+| `jenkins_build_revision` | Build an exact commit on Git-plugin jobs through `/git/notifyCommit?sha1=`. For freestyle jobs with a wildcard branch spec, where a plain trigger rebuilds the last built revision. `url`, `branch` and `sha` default to the current repo, branch and `HEAD`. |
 | `jenkins_stop_build` | Abort a running build by number. |
 
 ### Job configuration
@@ -41,6 +42,7 @@ Every install option runs the same single static Go binary: **npm** (`npx @stubb
 - "what jobs exist under platform/api?" → `jenkins_list_jobs` with `folder=platform/api`
 - "what's waiting in the queue?" → `jenkins_get_queue`
 - "trigger a build with ENV=production" → `jenkins_trigger_build` with `parameters`
+- "rebuild this commit now that CI is fixed" → `jenkins_build_revision`, then `jenkins_get_build` with `sha=<HEAD>`
 - "stop the current build" → `jenkins_stop_build` with `buildNumber`
 - "add a nightly cron trigger to this job" → `jenkins_get_job_config` then `jenkins_update_job_config` with updated `triggers`
 
@@ -75,12 +77,15 @@ The `$schema` field is optional but enables editor autocomplete and validation.
 
 `repoJobMap` keys are matched as case-insensitive substrings against the git remote URL of the current repo, so the server can resolve `jobPath` automatically when you call `jenkins_get_build` from inside a repo. Values can be a single job path or an array. Job paths use slashes for nested folders (e.g. `folder/sub-folder/job-name`).
 
+Add `"notifyCommitToken": "<token>"` to use `jenkins_build_revision` on Git plugin 4.11 or later (see [Notes](#notes)).
+
 Alternatively, use environment variables (or a `.env` file in this directory):
 
 ```env
 JENKINS_URL=https://jenkins.example.com
 JENKINS_USERNAME=your-jenkins-login
 JENKINS_TOKEN=your-api-token
+JENKINS_NOTIFY_COMMIT_TOKEN=your-notifycommit-token   # optional
 ```
 
 Config is resolved in this order: `--config <path>` CLI arg → `JENKINS_MCP_CONFIG` env var → `~/.jenkins-mcp.json` → `$XDG_CONFIG_HOME/jenkins-mcp/config.json` (default `~/.config/jenkins-mcp/config.json`) → `.jenkins-mcp.json` in cwd → environment variables.
@@ -422,7 +427,8 @@ If none of these yields a repo (e.g. stateless mode with no header, or no root m
 ## Notes
 
 - Authentication is HTTP Basic with `username:apitoken` (Jenkins's standard mechanism).
-- Write operations (`jenkins_trigger_build`, `jenkins_stop_build`, `jenkins_update_job_config`) require the API token user to have the appropriate Jenkins permissions.
+- Write operations (`jenkins_trigger_build`, `jenkins_build_revision`, `jenkins_stop_build`, `jenkins_update_job_config`) require the API token user to have the appropriate Jenkins permissions.
+- `jenkins_build_revision` calls the Git plugin's `notifyCommit` endpoint, which schedules a build of the given `sha1` on every job whose remote matches `url` and whose branch spec matches `branch`, and which has **Poll SCM** enabled (an empty schedule is enough). Since Git plugin 4.11 the endpoint needs its own access token: create one under **Manage Jenkins → Security → Git plugin notifyCommit access tokens** and set it as `notifyCommitToken` in the config file (or `JENKINS_NOTIFY_COMMIT_TOKEN`).
 - CSRF crumb handling is automatic — API tokens bypass the crumb check on most Jenkins installations, but the server fetches and caches a crumb for installations that require it.
 - `jenkins_get_build` with `sha` scans the last 30 builds of the job for a matching `lastBuiltRevision`. Increase `scanLimit` for repos with many builds per commit.
 - Pipeline stage breakdown comes from Jenkins's `wfapi` (workflow plugin). Freestyle jobs don't expose it, and the tool falls back to summary fields only.

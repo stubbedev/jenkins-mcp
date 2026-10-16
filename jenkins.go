@@ -25,6 +25,7 @@ var errEmptyConfig = errors.New("config.xml has no root element")
 type apiError struct {
 	status  int
 	message string
+	body    string
 }
 
 func (e *apiError) Error() string { return e.message }
@@ -194,6 +195,8 @@ type JenkinsClient struct {
 	repoJobMap map[string][]string
 	http       *http.Client
 
+	notifyCommitToken string
+
 	mu         sync.Mutex // guards the caches below (worker pool runs handlers concurrently)
 	userCache  *struct{ id, fullName string }
 	crumbCache *crumb
@@ -253,7 +256,7 @@ func (c *JenkinsClient) requestRaw(ctx context.Context, method, path, accept str
 	defer res.Body.Close()
 	body, _ := io.ReadAll(res.Body)
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
-		return nil, &apiError{status: res.StatusCode, message: formatJenkinsError(res.StatusCode, method, path, string(body))}
+		return nil, &apiError{status: res.StatusCode, message: formatJenkinsError(res.StatusCode, method, path, string(body)), body: string(body)}
 	}
 	return body, nil
 }
@@ -897,6 +900,75 @@ func (c *JenkinsClient) triggerBuildTool(ctx context.Context, jobPath string, pa
 		l.add("Use jenkins_get_queue to monitor, or jenkins_list_builds to find the build number once it starts.")
 	}
 	return l.String(), nil
+}
+
+// buildRevisionTool asks the Git plugin to build sha on every job whose remote
+// and branch spec match, via /git/notifyCommit. The plugin attaches the
+// revision to each build it schedules, so the build chooser cannot fall back to
+// the last built revision the way it does for a plain /build.
+func (c *JenkinsClient) buildRevisionTool(ctx context.Context, remote, branch, sha string) (string, error) {
+	q := url.Values{}
+	q.Set("url", remote)
+	q.Set("sha1", sha)
+	if branch != "" {
+		q.Set("branches", branch)
+	}
+	if c.notifyCommitToken != "" {
+		q.Set("token", c.notifyCommitToken)
+	}
+	body, err := c.requestRaw(ctx, "GET", "/git/notifyCommit?"+q.Encode(), "text/plain", 0)
+	if err != nil {
+		return "", c.notifyCommitError(err)
+	}
+	reply := strings.TrimSpace(string(body))
+	var scheduled []string
+	for _, line := range strings.Split(reply, "\n") {
+		if name, ok := strings.CutPrefix(strings.TrimSpace(line), "Scheduled "); ok && !strings.HasPrefix(name, "polling of ") {
+			scheduled = append(scheduled, name)
+		}
+	}
+	target := fmt.Sprintf("%s of %s", sha, remote)
+	if branch != "" {
+		target += fmt.Sprintf(" (branch %s)", branch)
+	}
+	if len(scheduled) == 0 {
+		return "", fmt.Errorf("Jenkins scheduled no build for %s. A job reacts only when its Git remote matches the url, its branch spec matches the branch, and it has \"Poll SCM\" enabled (an empty schedule is fine) without \"Ignore post-commit hooks\". Jenkins replied: %s", target, orDefault(reply, "(empty)"))
+	}
+	var l lines
+	l.add("Asked Jenkins to build %s.", target)
+	l.add("Scheduled %d job(s):", len(scheduled))
+	for _, name := range scheduled {
+		l.add("  - %s", name)
+	}
+	l.add("Use jenkins_get_build sha=%s to follow the build once it starts.", sha)
+	return l.String(), nil
+}
+
+// notifyCommitError rewrites a failed notifyCommit call so the message names
+// the token setting instead of the API token, and never echoes the query
+// string, which carries the notifyCommit token.
+func (c *JenkinsClient) notifyCommitError(err error) error {
+	var ae *apiError
+	if errors.As(err, &ae) {
+		msg := fmt.Sprintf("Jenkins %d GET /git/notifyCommit", ae.status)
+		if d := parseJenkinsErrorBody(ae.body); d != "" {
+			msg += ": " + d
+		}
+		switch {
+		case (ae.status == 401 || ae.status == 403) && c.notifyCommitToken == "":
+			msg += ". Set notifyCommitToken in ~/.jenkins-mcp.json (or JENKINS_NOTIFY_COMMIT_TOKEN) to a token from Manage Jenkins -> Security -> \"Git plugin notifyCommit access tokens\"."
+		case ae.status == 401 || ae.status == 403:
+			msg += ". Jenkins rejected the configured notifyCommitToken; check it under Manage Jenkins -> Security -> \"Git plugin notifyCommit access tokens\"."
+		case ae.status == 404:
+			msg += ". Is the Git plugin installed?"
+		}
+		return &apiError{status: ae.status, message: msg, body: ae.body}
+	}
+	var ue *url.Error
+	if errors.As(err, &ue) {
+		return fmt.Errorf("GET /git/notifyCommit: %w", ue.Err)
+	}
+	return err
 }
 
 func (c *JenkinsClient) getJobConfigTool(ctx context.Context, jobPath, format string) (string, error) {

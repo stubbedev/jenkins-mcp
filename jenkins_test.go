@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"strings"
 	"testing"
 )
@@ -141,5 +142,48 @@ func TestRenderStructured(t *testing.T) {
 	tn := renderStructured(v, "toon")
 	if tn == "" || strings.Contains(tn, "\"n\": \"3\"") {
 		t.Errorf("toon render looks wrong: %s", tn)
+	}
+}
+
+func TestResolveRevision(t *testing.T) {
+	dir := t.TempDir()
+	ctx := withCwd(context.Background(), dir)
+	git := func(args ...string) string {
+		t.Helper()
+		out := safeGit(ctx, args...)
+		if out == "" {
+			t.Skipf("git %v produced no output (git missing?)", args)
+		}
+		return out
+	}
+	git("init", "-b", "feature/x")
+	safeGit(ctx, "remote", "add", "origin", "git@host:team/repo.git")
+	git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "--allow-empty", "-m", "one")
+	first := git("rev-parse", "HEAD")
+	git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "--allow-empty", "-m", "two")
+	head := git("rev-parse", "HEAD")
+
+	remote, branch, sha, err := resolveRevision(ctx, "", "", "")
+	if err != nil || remote != "git@host:team/repo.git" || branch != "feature/x" || sha != head {
+		t.Errorf("defaults = %q %q %q %v; want origin, feature/x, %s", remote, branch, sha, err, head)
+	}
+
+	_, branch, sha, err = resolveRevision(ctx, "", "", first[:8])
+	if err != nil || branch != "" || sha != first {
+		t.Errorf("short sha = %q %q %v; want no branch and %s", branch, sha, err, first)
+	}
+
+	_, branch, sha, err = resolveRevision(ctx, "https://other/x.git", "main", "HEAD~1")
+	if err != nil || branch != "main" || sha != first {
+		t.Errorf("explicit = %q %q %v", branch, sha, err)
+	}
+
+	upper := strings.ToUpper(head)
+	if _, _, sha, err = resolveRevision(context.Background(), "u", "", upper); err != nil || sha != head {
+		t.Errorf("full sha without a repo = %q %v", sha, err)
+	}
+
+	if _, _, _, err = resolveRevision(ctx, "", "", "--output=/tmp/x"); err == nil {
+		t.Error("want error for an unresolvable revision")
 	}
 }

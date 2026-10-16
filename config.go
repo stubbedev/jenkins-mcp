@@ -15,15 +15,19 @@ type Config struct {
 	Username   string
 	Token      string
 	RepoJobMap map[string][]string
+	// NotifyCommitToken authenticates jenkins_build_revision's calls to the Git
+	// plugin's /git/notifyCommit, which ignores the API token (Git plugin 4.11+).
+	NotifyCommitToken string
 }
 
 // configFile mirrors the on-disk ~/.jenkins-mcp.json shape. repoJobMap values
 // may be a single string or an array of strings, so it is decoded leniently.
 type configFile struct {
-	URL        string                     `json:"url"`
-	Username   string                     `json:"username"`
-	Token      string                     `json:"token"`
-	RepoJobMap map[string]json.RawMessage `json:"repoJobMap"`
+	URL               string                     `json:"url"`
+	Username          string                     `json:"username"`
+	Token             string                     `json:"token"`
+	NotifyCommitToken string                     `json:"notifyCommitToken"`
+	RepoJobMap        map[string]json.RawMessage `json:"repoJobMap"`
 }
 
 // loadConfig resolves configuration in the same precedence order as the original
@@ -51,11 +55,13 @@ func loadConfig() *Config {
 		cfg.URL = file.URL
 		cfg.Username = file.Username
 		cfg.Token = file.Token
+		cfg.NotifyCommitToken = file.NotifyCommitToken
 		cfg.RepoJobMap = normalizeRepoJobMap(file.RepoJobMap)
 	}
 	cfg.URL = get(cfg.URL, "JENKINS_URL")
 	cfg.Username = get(cfg.Username, "JENKINS_USERNAME")
 	cfg.Token = get(cfg.Token, "JENKINS_TOKEN")
+	cfg.NotifyCommitToken = get(cfg.NotifyCommitToken, "JENKINS_NOTIFY_COMMIT_TOKEN")
 
 	if cfg.URL == "" || cfg.Username == "" || cfg.Token == "" {
 		var missing []string

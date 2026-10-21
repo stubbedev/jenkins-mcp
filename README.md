@@ -116,7 +116,7 @@ npm install -g @stubbedev/jenkins-mcp                               # or install
 
 The Composer package `stubbedev/jenkins-mcp` is for PHP projects, or machines with PHP but no Node.
 It is a Composer plugin: on `composer install` / `update` it downloads the prebuilt binary for your OS
-and architecture (the same 14 targets as npm), from the release matching the installed version, so a
+and architecture (the same 13 targets as npm), from the release matching the installed version, so a
 pinned version pins the binary. Your MCP client then runs that native binary directly, and PHP is
 never in the request path:
 
@@ -442,7 +442,7 @@ If none of these yields a repo (e.g. stateless mode with no header, or no root m
 
 ## Releases (Maintainers)
 
-Each release ships prebuilt Go binaries (attached to the GitHub release), the npm wrapper `@stubbedev/jenkins-mcp`, and the Composer package `stubbedev/jenkins-mcp`. `.github/workflows/publish.yml` runs on a pushed `v*` tag and: cross-compiles binaries for 14 targets — linux (amd64, arm64, arm/v7, 386, ppc64le, s390x, riscv64), darwin (amd64, arm64), windows (amd64, arm64, 386), and freebsd (amd64, arm64) — attaches them to the GitHub release, then publishes the npm package. The Nix flake builds from the tagged source and tracks `package.json` for its version, so it needs no separate release step.
+Each release ships prebuilt Go binaries (attached to the GitHub release), the npm wrapper `@stubbedev/jenkins-mcp`, and the Composer package `stubbedev/jenkins-mcp`. `.github/workflows/publish.yml` runs on a pushed `v*` tag and: cross-compiles binaries for 13 targets — linux (amd64, arm64, arm/v7, 386, ppc64le, s390x, riscv64), darwin (arm64), windows (amd64, arm64, 386), and freebsd (amd64, arm64) — attaches them to the GitHub release, then publishes the npm package. The Nix flake builds from the tagged source and tracks `package.json` for its version, so it needs no separate release step.
 
 Use semantic versioning. Breaking tool-surface changes should bump the minor version while `<1.0.0` (for example `0.0.x` -> `0.1.0`).
 

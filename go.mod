@@ -1,11 +1,13 @@
 module github.com/stubbedev/jenkins-mcp
 
-go 1.26
+go 1.27.0
+
+toolchain go1.27.2
 
 require (
 	github.com/beevik/etree v1.8.1
 	github.com/modelcontextprotocol/go-sdk v1.8.0
-	github.com/toon-format/toon-go v0.0.0-20251202084852-7ca0e27c4e8c
+	github.com/toon-format/toon-go v1.0.1
 )
 
 require (

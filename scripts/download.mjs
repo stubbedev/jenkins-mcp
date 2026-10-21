@@ -1,20 +1,18 @@
-// Resolves (and, if needed, downloads) the prebuilt Go binary that matches the
-// current platform. Shared by the postinstall script and the CLI launcher, so a
-// failed install (e.g. offline) self-heals on first run.
-import { createWriteStream } from 'node:fs';
-import { chmod, mkdir, rm, stat } from 'node:fs/promises';
-import { readFileSync } from 'node:fs';
+import { randomBytes } from 'node:crypto';
+import { createWriteStream, readFileSync } from 'node:fs';
+import { chmod, copyFile, link, mkdir, rename, rm, stat } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
-import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+
+const NAME = 'jenkins-mcp';
+const REPO = `stubbedev/${NAME}`;
+const SOURCE_HINT = `go install github.com/${REPO}@latest`;
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf-8'));
-const REPO = 'stubbedev/jenkins-mcp';
 
-// Map Node's platform/arch onto the Go release asset naming. Anything not
-// listed falls back to the "go install" hint in target().
 const PLATFORMS = {
   'linux:x64': { os: 'linux', arch: 'amd64', ext: '' },
   'linux:arm64': { os: 'linux', arch: 'arm64', ext: '' },
@@ -32,58 +30,88 @@ const PLATFORMS = {
   'freebsd:arm64': { os: 'freebsd', arch: 'arm64', ext: '' },
 };
 
+export async function ensureBinary() {
+  const dest = join(root, 'bin', `${NAME}-native${target().ext}`);
+  if (await present(dest)) return dest;
+  const cached = join(cacheDir(), asset());
+  if (!(await present(cached))) await fetchInto(cached);
+  await place(cached, dest);
+  return dest;
+}
+
 function target() {
   const key = `${process.platform}:${process.arch}`;
   const t = PLATFORMS[key];
   if (!t) {
-    throw new Error(
-      `Unsupported platform ${key}. Install from source instead:\n` +
-        `  go install github.com/${REPO}@v${pkg.version}`,
-    );
+    throw new Error(`Unsupported platform ${key}. Build from source with: ${SOURCE_HINT}`);
   }
   return t;
 }
 
-function binDir() {
-  return join(root, 'bin');
-}
-
-function binPath() {
-  const { ext } = target();
-  return join(binDir(), `jenkins-mcp-native${ext}`);
-}
-
-async function fileExists(p) {
-  try {
-    const s = await stat(p);
-    return s.isFile() && s.size > 0;
-  } catch {
-    return false;
-  }
-}
-
-// ensureBinary returns the path to the platform binary, downloading it from the
-// matching GitHub release on first use. Idempotent and safe to call repeatedly.
-export async function ensureBinary() {
-  const dest = binPath();
-  if (await fileExists(dest)) return dest;
-
+function asset() {
   const { os, arch, ext } = target();
-  const asset = `jenkins-mcp_${os}_${arch}${ext}`;
-  const url = `https://github.com/${REPO}/releases/download/v${pkg.version}/${asset}`;
+  return `${NAME}_${os}_${arch}${ext}`;
+}
 
+async function fetchInto(cached) {
+  const url = `https://github.com/${REPO}/releases/download/v${pkg.version}/${asset()}`;
   const res = await fetch(url, { redirect: 'follow' });
   if (!res.ok || !res.body) {
-    throw new Error(`Failed to download ${asset} (v${pkg.version}): HTTP ${res.status}`);
+    throw new Error(`Failed to download ${url}: HTTP ${res.status}`);
   }
+  const tmp = await tmpBeside(cached);
+  try {
+    await pipeline(Readable.fromWeb(res.body), createWriteStream(tmp));
+    if ((await stat(tmp)).size === 0) {
+      throw new Error(`Failed to download ${url}: empty response`);
+    }
+    await commit(tmp, cached);
+  } finally {
+    await rm(tmp, { force: true });
+  }
+}
 
-  await mkdir(binDir(), { recursive: true });
-  const tmp = `${dest}.tmp`;
-  await rm(tmp, { force: true });
-  await pipeline(Readable.fromWeb(res.body), createWriteStream(tmp));
+function cacheDir() {
+  return join(cacheRoot(), NAME, pkg.version);
+}
+
+function cacheRoot() {
+  if (process.env.XDG_CACHE_HOME) return process.env.XDG_CACHE_HOME;
+  const [variable, ...suffix] =
+    { win32: ['LOCALAPPDATA'], darwin: ['HOME', 'Library', 'Caches'] }[process.platform] ?? ['HOME', '.cache'];
+  const base = process.env[variable];
+  if (!base) {
+    throw new Error(`Cannot locate a cache directory: neither XDG_CACHE_HOME nor ${variable} is set`);
+  }
+  return join(base, ...suffix);
+}
+
+async function present(path) {
+  try {
+    const s = await stat(path);
+    return s.isFile() && s.size > 0;
+  } catch (err) {
+    if (err.code === 'ENOENT') return false;
+    throw err;
+  }
+}
+
+async function place(cached, dest) {
+  const tmp = await tmpBeside(dest);
+  try {
+    await link(cached, tmp).catch(() => copyFile(cached, tmp));
+    await commit(tmp, dest);
+  } finally {
+    await rm(tmp, { force: true });
+  }
+}
+
+async function commit(tmp, dest) {
   await chmod(tmp, 0o755);
-  // Atomic-ish: rename into place once fully written.
-  const { rename } = await import('node:fs/promises');
   await rename(tmp, dest);
-  return dest;
+}
+
+async function tmpBeside(file) {
+  await mkdir(dirname(file), { recursive: true });
+  return `${file}.${randomBytes(6).toString('hex')}.tmp`;
 }

@@ -1,6 +1,6 @@
 name: Nix vendorHash
 
-# Keeps flake.nix's vendorHash in sync automatically. The flake version itself
+# Keeps nix/package.nix's vendorHash in sync automatically. The flake version itself
 # is read from package.json, so only vendorHash can drift — and only when the Go
 # dependency set changes (e.g. a Dependabot bump). This recomputes it and commits
 # the result back to master so `nix run github:stubbedev/jenkins-mcp` always builds.
@@ -12,6 +12,8 @@ on:
       - 'go.mod'
       - 'go.sum'
       - 'flake.nix'
+      - 'flake.lock'
+      - 'nix/**'
   workflow_dispatch:
 
 permissions:
@@ -35,12 +37,12 @@ jobs:
 
       - name: Commit if changed
         run: |
-          if git diff --quiet flake.nix; then
+          if git diff --quiet nix/package.nix; then
             echo "vendorHash already up to date."
             exit 0
           fi
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add flake.nix
+          git add nix/package.nix
           git commit -m "chore(nix): update vendorHash"
           git push origin HEAD

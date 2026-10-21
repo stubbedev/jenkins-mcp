@@ -493,4 +493,4 @@ printf '%s\n' \
   '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}' | ./jenkins-mcp
 ```
 
-Tool schemas live in `tools.json` (embedded into the binary via `go:embed`). The npm wrapper lives in `bin/cli.mjs` + `scripts/`; the Composer plugin is `src/ComposerPlugin.php`, with the launcher `bin/jenkins-mcp` (PHP) and the download logic both share in `src/Binary.php`. All of them download the release binary to `bin/jenkins-mcp-native`. The Nix flake is `flake.nix`.
+Tool schemas live in `tools.json` (embedded into the binary via `go:embed`). The npm wrapper lives in `bin/cli.mjs` + `scripts/`; the Composer plugin is `src/ComposerPlugin.php`, with the launcher `bin/jenkins-mcp` (PHP) and the download logic both share in `src/Binary.php`. All of them download the release binary to `bin/jenkins-mcp-native`. The Nix flake is `flake.nix`, with the package in `nix/package.nix` and the dev shell in `nix/shell.nix`.

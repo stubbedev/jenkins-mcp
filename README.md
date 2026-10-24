@@ -88,7 +88,7 @@ JENKINS_TOKEN=your-api-token
 JENKINS_NOTIFY_COMMIT_TOKEN=your-notifycommit-token   # optional
 ```
 
-Config is resolved in this order: `--config <path>` CLI arg → `JENKINS_MCP_CONFIG` env var → `~/.jenkins-mcp.json` → `$XDG_CONFIG_HOME/jenkins-mcp/config.json` (default `~/.config/jenkins-mcp/config.json`) → `.jenkins-mcp.json` in cwd → environment variables. The first file found is used. A path given with `--config` or `JENKINS_MCP_CONFIG` must exist; the default locations are optional. A config file that cannot be read, is not valid JSON, or has keys outside the schema stops the server with the path and the reason.
+Config is resolved in this order: `--config <path>` CLI arg → `JENKINS_MCP_CONFIG` env var → `~/.jenkins-mcp.json` → `$XDG_CONFIG_HOME/jenkins-mcp/config.json` (default `~/.config/jenkins-mcp/config.json`) → `.jenkins-mcp.json` in cwd → environment variables. The first file found is used. A path given with `--config` or `JENKINS_MCP_CONFIG` must exist; the default locations are optional. A config file that cannot be read, is not valid JSON, or has keys outside the schema stops the server with the path and the reason. With no url, username and token at all the server starts unconfigured and says so; setting only some of them, or a url that is not a plain `http(s)://host[/path]` URL, stops it with what is wrong.
 
 ### 3. Install
 

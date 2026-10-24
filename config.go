@@ -9,6 +9,7 @@ import (
 	"io"
 	"io/fs"
 	"maps"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -57,21 +58,45 @@ func loadConfig(explicitPath string) (*Config, error) {
 	cfg.Token = get(cfg.Token, "JENKINS_TOKEN")
 	cfg.NotifyCommitToken = get(cfg.NotifyCommitToken, "JENKINS_NOTIFY_COMMIT_TOKEN")
 
-	if cfg.URL == "" || cfg.Username == "" || cfg.Token == "" {
-		var missing []string
-		if cfg.URL == "" {
-			missing = append(missing, "url (or JENKINS_URL)")
-		}
-		if cfg.Username == "" {
-			missing = append(missing, "username (or JENKINS_USERNAME)")
-		}
-		if cfg.Token == "" {
-			missing = append(missing, "token (or JENKINS_TOKEN)")
-		}
-		logErr("[jenkins-mcp] Disabled: missing " + strings.Join(missing, ", "))
+	if cfg.URL == "" && cfg.Username == "" && cfg.Token == "" {
+		logErr("[jenkins-mcp] Disabled: no Jenkins url, username or token configured")
 		return nil, nil
 	}
+	var missing []string
+	if cfg.URL == "" {
+		missing = append(missing, "url (or JENKINS_URL)")
+	}
+	if cfg.Username == "" {
+		missing = append(missing, "username (or JENKINS_USERNAME)")
+	}
+	if cfg.Token == "" {
+		missing = append(missing, "token (or JENKINS_TOKEN)")
+	}
+	if len(missing) > 0 {
+		return nil, fmt.Errorf("incomplete Jenkins configuration: missing %s", strings.Join(missing, ", "))
+	}
+	if err := validateJenkinsURL(cfg.URL); err != nil {
+		return nil, err
+	}
 	return &cfg, nil
+}
+
+func validateJenkinsURL(raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("Jenkins url: %w", err)
+	}
+	switch {
+	case u.User != nil:
+		return errors.New("Jenkins url must not contain credentials; set username and token instead")
+	case u.Scheme != "http" && u.Scheme != "https":
+		return fmt.Errorf("Jenkins url %q must start with http:// or https://", raw)
+	case u.Host == "":
+		return fmt.Errorf("Jenkins url %q has no host", raw)
+	case u.RawQuery != "" || u.Fragment != "":
+		return fmt.Errorf("Jenkins url %q must not have a query or fragment", raw)
+	}
+	return nil
 }
 
 func configSources(explicitPath string) []configSource {

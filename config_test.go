@@ -265,3 +265,26 @@ func TestJobPathPatternMatchesTheSchema(t *testing.T) {
 		}
 	}
 }
+
+func TestLoadConfigRejectsIncompleteOrInvalidSettings(t *testing.T) {
+	for name, c := range map[string]struct {
+		env  map[string]string
+		want string
+	}{
+		"token missing": {map[string]string{"JENKINS_URL": "https://j", "JENKINS_USERNAME": "u"}, "incomplete Jenkins configuration: missing token (or JENKINS_TOKEN)"},
+		"no scheme":     {map[string]string{"JENKINS_URL": "jenkins.example.com", "JENKINS_USERNAME": "u", "JENKINS_TOKEN": "t"}, `Jenkins url "jenkins.example.com" must start with http:// or https://`},
+		"credentials":   {map[string]string{"JENKINS_URL": "https://u:p@j", "JENKINS_USERNAME": "u", "JENKINS_TOKEN": "t"}, "must not contain credentials"},
+		"query":         {map[string]string{"JENKINS_URL": "https://j/?x=1", "JENKINS_USERNAME": "u", "JENKINS_TOKEN": "t"}, "must not have a query"},
+		"no host":       {map[string]string{"JENKINS_URL": "https:///jenkins", "JENKINS_USERNAME": "u", "JENKINS_TOKEN": "t"}, "has no host"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			isolateConfigEnv(t)
+			for k, v := range c.env {
+				t.Setenv(k, v)
+			}
+			if cfg, err := loadConfig(""); err == nil || !strings.Contains(err.Error(), c.want) || strings.Contains(err.Error(), ":p@") {
+				t.Errorf("want error containing %q, got %+v, %v", c.want, cfg, err)
+			}
+		})
+	}
+}

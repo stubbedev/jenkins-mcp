@@ -11,6 +11,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 )
@@ -169,30 +170,85 @@ func normalizeRepoJobMap(raw map[string]json.RawMessage) (map[string][]string, e
 	return out, nil
 }
 
-// loadDotEnv loads ./.env into the process environment (without overriding
-// already-set vars), replacing the TS `dotenv/config` import. Best-effort.
-func loadDotEnv() {
-	f, err := os.Open(".env")
+const dotEnvFile = ".env"
+
+var dotEnvKey = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+type envEntry struct {
+	key   string
+	value string
+}
+
+func loadDotEnv(path string) error {
+	f, err := os.Open(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
 	if err != nil {
-		return
+		return fmt.Errorf("reading env file: %w", err)
 	}
 	defer f.Close()
-	sc := bufio.NewScanner(f)
-	for sc.Scan() {
+	entries, err := parseDotEnv(path, f)
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
+		if _, set := os.LookupEnv(e.key); set {
+			continue
+		}
+		if err := os.Setenv(e.key, e.value); err != nil {
+			return fmt.Errorf("%s: setting %s: %w", path, e.key, err)
+		}
+	}
+	return nil
+}
+
+func parseDotEnv(name string, r io.Reader) ([]envEntry, error) {
+	var entries []envEntry
+	seen := map[string]int{}
+	sc := bufio.NewScanner(r)
+	for n := 1; sc.Scan(); n++ {
 		line := strings.TrimSpace(sc.Text())
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
-		line = strings.TrimPrefix(line, "export ")
-		key, val, ok := strings.Cut(line, "=")
+		key, val, ok := strings.Cut(strings.TrimPrefix(line, "export "), "=")
 		if !ok {
-			continue
+			return nil, fmt.Errorf("%s:%d: expected KEY=value, got %q", name, n, line)
 		}
 		key = strings.TrimSpace(key)
-		val = strings.TrimSpace(val)
-		val = strings.Trim(val, `"'`)
-		if key != "" && os.Getenv(key) == "" {
-			os.Setenv(key, val)
+		if !dotEnvKey.MatchString(key) {
+			return nil, fmt.Errorf("%s:%d: invalid variable name %q", name, n, key)
 		}
+		if first, dup := seen[key]; dup {
+			return nil, fmt.Errorf("%s:%d: %s is already set on line %d", name, n, key, first)
+		}
+		seen[key] = n
+		value, err := unquoteDotEnvValue(strings.TrimSpace(val))
+		if err != nil {
+			return nil, fmt.Errorf("%s:%d: %s: %w", name, n, key, err)
+		}
+		entries = append(entries, envEntry{key: key, value: value})
 	}
+	if err := sc.Err(); err != nil {
+		return nil, fmt.Errorf("reading %s: %w", name, err)
+	}
+	return entries, nil
+}
+
+func unquoteDotEnvValue(v string) (string, error) {
+	if v == "" || (v[0] != '"' && v[0] != '\'') {
+		if i := strings.IndexByte(v, '#'); i == 0 || (i > 0 && (v[i-1] == ' ' || v[i-1] == '\t')) {
+			v = strings.TrimSpace(v[:i])
+		}
+		return v, nil
+	}
+	end := strings.IndexByte(v[1:], v[0])
+	if end < 0 {
+		return "", fmt.Errorf("unterminated %c quote in %s", v[0], v)
+	}
+	if rest := strings.TrimSpace(v[end+2:]); rest != "" && !strings.HasPrefix(rest, "#") {
+		return "", fmt.Errorf("unexpected %q after the closing quote", rest)
+	}
+	return v[1 : end+1], nil
 }

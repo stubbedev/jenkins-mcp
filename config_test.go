@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -164,8 +165,9 @@ func TestLoadConfigFailsLoudly(t *testing.T) {
 
 func TestDotEnvFeedsEveryStartupSetting(t *testing.T) {
 	dir := isolateConfigEnv(t)
-	for _, k := range []string{"JENKINS_MCP_HTTP", "JENKINS_MCP_HTTP_PATH", "JENKINS_MCP_HTTP_STATELESS", "JENKINS_MCP_FORMAT"} {
+	for _, k := range []string{"JENKINS_MCP_HTTP", "JENKINS_MCP_HTTP_PATH", "JENKINS_MCP_HTTP_STATELESS", "JENKINS_MCP_FORMAT", "JENKINS_URL", "JENKINS_USERNAME", "JENKINS_TOKEN"} {
 		t.Setenv(k, "")
+		os.Unsetenv(k)
 	}
 	writeConfig(t, filepath.Join(dir, ".env"), `JENKINS_MCP_HTTP=127.0.0.1:9123
 JENKINS_MCP_HTTP_PATH=/rpc
@@ -182,5 +184,52 @@ JENKINS_TOKEN=dt
 	want := transportConfig{http: true, addr: "127.0.0.1:9123", path: "/rpc", stateless: true}
 	if got.transport != want || got.format != formatJSON || got.config == nil || got.config.URL != "https://dotenv" {
 		t.Errorf("settings = %+v (config %+v); want transport %+v, format json and the .env Jenkins URL", got, got.config, want)
+	}
+}
+
+func TestParseDotEnv(t *testing.T) {
+	got, err := parseDotEnv("x.env", strings.NewReader("# comment\n\nA=1\nexport B = two words \nC=\"quoted # not a comment\"  # trailing\nD='single'\nE=\nF=a=b\nG=tok   # optional\nH=a#b\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []envEntry{{"A", "1"}, {"B", "two words"}, {"C", "quoted # not a comment"}, {"D", "single"}, {"E", ""}, {"F", "a=b"}, {"G", "tok"}, {"H", "a#b"}}
+	if !slices.Equal(got, want) {
+		t.Errorf("parseDotEnv = %+v, want %+v", got, want)
+	}
+
+	for body, wantErr := range map[string]string{
+		"A=1\nJENKINS_TOKEN\n": `x.env:2: expected KEY=value, got "JENKINS_TOKEN"`,
+		"1A=x\n":               `x.env:1: invalid variable name "1A"`,
+		"A=1\n\nA=2\n":         "x.env:3: A is already set on line 1",
+		"A=\"open\n":           `x.env:1: A: unterminated " quote`,
+		"A='mixed\"\n":         "x.env:1: A: unterminated ' quote",
+		"=value\n":             `x.env:1: invalid variable name ""`,
+	} {
+		if _, err := parseDotEnv("x.env", strings.NewReader(body)); err == nil || !strings.Contains(err.Error(), wantErr) {
+			t.Errorf("parseDotEnv(%q): want error containing %q, got %v", body, wantErr, err)
+		}
+	}
+}
+
+func TestLoadDotEnvKeepsExistingEnvironment(t *testing.T) {
+	dir := t.TempDir()
+	path := writeConfig(t, filepath.Join(dir, ".env"), "JMCP_TEST_SET=fromfile\nJMCP_TEST_EMPTY=fromfile\nJMCP_TEST_NEW=fromfile\n")
+	t.Setenv("JMCP_TEST_SET", "fromenv")
+	t.Setenv("JMCP_TEST_EMPTY", "")
+	t.Setenv("JMCP_TEST_NEW", "")
+	os.Unsetenv("JMCP_TEST_NEW")
+	if err := loadDotEnv(path); err != nil {
+		t.Fatal(err)
+	}
+	for k, want := range map[string]string{"JMCP_TEST_SET": "fromenv", "JMCP_TEST_EMPTY": "", "JMCP_TEST_NEW": "fromfile"} {
+		if got := os.Getenv(k); got != want {
+			t.Errorf("%s = %q, want %q", k, got, want)
+		}
+	}
+	if err := loadDotEnv(filepath.Join(dir, "missing.env")); err != nil {
+		t.Errorf("a missing .env must be optional, got %v", err)
+	}
+	if err := loadDotEnv(dir); err == nil || !strings.Contains(err.Error(), dir) {
+		t.Errorf("an unreadable .env must fail with its path, got %v", err)
 	}
 }

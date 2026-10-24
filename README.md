@@ -79,7 +79,7 @@ The `$schema` field is optional but enables editor autocomplete and validation.
 
 Add `"notifyCommitToken": "<token>"` to use `jenkins_build_revision` on Git plugin 4.11 or later (see [Notes](#notes)).
 
-Alternatively, use environment variables (or a `.env` file in this directory):
+Alternatively, use environment variables, or a `.env` file in the server's working directory. `.env` is read before any other setting, so it can also set the `JENKINS_MCP_*` options below; a variable already set in the environment wins. Each line is `KEY=value`; blank lines and `#` comments are allowed, quotes around a value are stripped, and any other line stops the server with the file name and line number:
 
 ```env
 JENKINS_URL=https://jenkins.example.com

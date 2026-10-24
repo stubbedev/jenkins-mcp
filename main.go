@@ -67,7 +67,9 @@ type startupSettings struct {
 }
 
 func loadStartupSettings(args []string) (startupSettings, error) {
-	loadDotEnv()
+	if err := loadDotEnv(dotEnvFile); err != nil {
+		return startupSettings{}, err
+	}
 	settings := startupSettings{format: formatTOON}
 	if env := os.Getenv("JENKINS_MCP_FORMAT"); env != "" {
 		f, err := parseOutputFormat(strings.ToLower(env))

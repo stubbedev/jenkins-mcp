@@ -25,6 +25,7 @@ var errEmptyConfig = errors.New("config.xml has no root element")
 type apiError struct {
 	status  int
 	message string
+	body    string
 }
 
 func (e *apiError) Error() string { return e.message }
@@ -189,10 +190,11 @@ type testCase struct {
 
 // JenkinsClient is a thin authenticated HTTP client for the Jenkins REST API.
 type JenkinsClient struct {
-	baseURL    string
-	authHeader string
-	repoJobMap map[string][]string
-	http       *http.Client
+	baseURL           string
+	authHeader        string
+	repoJobMap        map[string][]string
+	notifyCommitToken string
+	http              *http.Client
 
 	mu         sync.Mutex // guards the caches below (worker pool runs handlers concurrently)
 	userCache  *struct{ id, fullName string }
@@ -205,13 +207,14 @@ type crumb struct {
 	value      string
 }
 
-func NewJenkinsClient(baseURL, username, token string, repoJobMap map[string][]string) *JenkinsClient {
-	auth := base64.StdEncoding.EncodeToString([]byte(username + ":" + token))
+func NewJenkinsClient(cfg Config) *JenkinsClient {
+	auth := base64.StdEncoding.EncodeToString([]byte(cfg.Username + ":" + cfg.Token))
 	return &JenkinsClient{
-		baseURL:    strings.TrimRight(baseURL, "/"),
-		authHeader: "Basic " + auth,
-		repoJobMap: repoJobMap,
-		http:       &http.Client{},
+		baseURL:           strings.TrimRight(cfg.URL, "/"),
+		authHeader:        "Basic " + auth,
+		repoJobMap:        cfg.RepoJobMap,
+		notifyCommitToken: cfg.NotifyCommitToken,
+		http:              &http.Client{},
 	}
 }
 
@@ -253,7 +256,7 @@ func (c *JenkinsClient) requestRaw(ctx context.Context, method, path, accept str
 	defer res.Body.Close()
 	body, _ := io.ReadAll(res.Body)
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
-		return nil, &apiError{status: res.StatusCode, message: formatJenkinsError(res.StatusCode, method, path, string(body))}
+		return nil, &apiError{status: res.StatusCode, message: formatJenkinsError(res.StatusCode, method, path, string(body)), body: string(body)}
 	}
 	return body, nil
 }
@@ -897,6 +900,99 @@ func (c *JenkinsClient) triggerBuildTool(ctx context.Context, jobPath string, pa
 		l.add("Use jenkins_get_queue to monitor, or jenkins_list_builds to find the build number once it starts.")
 	}
 	return l.String(), nil
+}
+
+type gitRevision struct {
+	remote string
+	branch string
+	sha    string
+}
+
+func (r gitRevision) String() string {
+	if r.branch == "" {
+		return fmt.Sprintf("%s of %s", r.sha, r.remote)
+	}
+	return fmt.Sprintf("%s of %s (branch %s)", r.sha, r.remote, r.branch)
+}
+
+type notifyCommitReply struct {
+	scheduled []string
+	polled    []string
+}
+
+func parseNotifyCommitReply(body string) notifyCommitReply {
+	var r notifyCommitReply
+	for line := range strings.SplitSeq(body, "\n") {
+		rest, ok := strings.CutPrefix(strings.TrimSpace(line), "Scheduled ")
+		if !ok {
+			continue
+		}
+		if job, polling := strings.CutPrefix(rest, "polling of "); polling {
+			r.polled = append(r.polled, job)
+			continue
+		}
+		r.scheduled = append(r.scheduled, rest)
+	}
+	return r
+}
+
+func (c *JenkinsClient) buildRevisionTool(ctx context.Context, rev gitRevision) (string, error) {
+	q := url.Values{}
+	q.Set("url", rev.remote)
+	q.Set("sha1", rev.sha)
+	if rev.branch != "" {
+		q.Set("branches", rev.branch)
+	}
+	if c.notifyCommitToken != "" {
+		q.Set("token", c.notifyCommitToken)
+	}
+	body, err := c.requestRaw(ctx, "GET", "/git/notifyCommit?"+q.Encode(), "text/plain", 0)
+	if err != nil {
+		return "", c.notifyCommitError(err)
+	}
+	text := strings.TrimSpace(string(body))
+	reply := parseNotifyCommitReply(text)
+	if len(reply.scheduled) == 0 && len(reply.polled) > 0 {
+		return "", fmt.Errorf("Jenkins only scheduled SCM polling for %s, not a build of %s: their branch spec is parameterized, so the Git plugin ignores sha1. Trigger them with jenkins_trigger_build and the branch parameter instead", strings.Join(reply.polled, ", "), rev)
+	}
+	if len(reply.scheduled) == 0 {
+		return "", fmt.Errorf("Jenkins scheduled no build for %s. A job reacts only when its Git remote matches the url, its branch spec matches the branch, and it has \"Poll SCM\" enabled (an empty schedule is fine) without \"Ignore post-commit hooks\". Jenkins replied: %s", rev, orDefault(text, "(empty)"))
+	}
+	var l lines
+	l.add("Asked Jenkins to build %s.", rev)
+	l.add("Scheduled %d job(s):", len(reply.scheduled))
+	for _, name := range reply.scheduled {
+		l.add("  - %s", name)
+	}
+	if len(reply.polled) > 0 {
+		l.add("Only polled (parameterized branch spec, sha1 ignored): %s", strings.Join(reply.polled, ", "))
+	}
+	l.add("Use jenkins_get_build sha=%s to follow the build once it starts.", rev.sha)
+	return l.String(), nil
+}
+
+func (c *JenkinsClient) notifyCommitError(err error) error {
+	var ae *apiError
+	if errors.As(err, &ae) {
+		msg := fmt.Sprintf("Jenkins %d GET /git/notifyCommit", ae.status)
+		if d := parseJenkinsErrorBody(ae.body); d != "" {
+			msg += ": " + d
+		}
+		switch {
+		case (ae.status == 401 || ae.status == 403) && c.notifyCommitToken == "":
+			msg += ". Set notifyCommitToken in ~/.jenkins-mcp.json (or JENKINS_NOTIFY_COMMIT_TOKEN) to a token from Manage Jenkins -> Security -> \"Git plugin notifyCommit access tokens\"."
+		case ae.status == 401 || ae.status == 403:
+			msg += ". Jenkins rejected the configured notifyCommitToken; check it under Manage Jenkins -> Security -> \"Git plugin notifyCommit access tokens\"."
+		case ae.status == 404:
+			msg += ". Is the Git plugin installed?"
+		}
+		return &apiError{status: ae.status, message: msg, body: ae.body}
+	}
+	var ue *url.Error
+	if errors.As(err, &ue) {
+		return fmt.Errorf("GET /git/notifyCommit: %w", ue.Err)
+	}
+	return fmt.Errorf("GET /git/notifyCommit: %w", err)
 }
 
 func (c *JenkinsClient) getJobConfigTool(ctx context.Context, jobPath, format string) (string, error) {

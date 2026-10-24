@@ -96,7 +96,7 @@ func TestCallToolDispatchesToJenkins(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	saved := jenkins
-	jenkins = NewJenkinsClient(srv.URL, "u", "t", nil)
+	jenkins = NewJenkinsClient(Config{URL: srv.URL, Username: "u", Token: "t"})
 	t.Cleanup(func() { jenkins = saved })
 
 	cs := connectTest(t)
@@ -112,5 +112,40 @@ func TestCallToolDispatchesToJenkins(t *testing.T) {
 	}
 	if !strings.Contains(resultText(res), "No top-level jobs found") {
 		t.Errorf("got %q, want empty-job-list message", resultText(res))
+	}
+}
+
+func TestCallToolBuildRevision(t *testing.T) {
+	sha := strings.Repeat("b", 40)
+	var query string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/git/notifyCommit", func(w http.ResponseWriter, r *http.Request) {
+		query = r.URL.RawQuery
+		_, _ = w.Write([]byte("Scheduled Kontainer\n"))
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	saved := jenkins
+	jenkins = NewJenkinsClient(Config{URL: srv.URL, Username: "u", Token: "t", NotifyCommitToken: "nc"})
+	t.Cleanup(func() { jenkins = saved })
+
+	cs := connectTest(t)
+	res, err := cs.CallTool(context.Background(), &mcp.CallToolParams{
+		Name:      "jenkins_build_revision",
+		Arguments: map[string]any{"url": "https://git.example.com/k.git", "branch": "feature/x", "sha": strings.ToUpper(sha)},
+	})
+	if err != nil {
+		t.Fatalf("CallTool: %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("unexpected error result: %q", resultText(res))
+	}
+	want := "branches=feature%2Fx&sha1=" + sha + "&token=nc&url=https%3A%2F%2Fgit.example.com%2Fk.git"
+	if query != want {
+		t.Errorf("query = %s, want %s", query, want)
+	}
+	if !strings.Contains(resultText(res), "- Kontainer") {
+		t.Errorf("got %q, want the scheduled job listed", resultText(res))
 	}
 }

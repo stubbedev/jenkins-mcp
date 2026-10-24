@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -31,7 +32,7 @@ func main() {
 
 	config := loadConfig()
 	if config != nil {
-		jenkins = NewJenkinsClient(config.URL, config.Username, config.Token, config.RepoJobMap)
+		jenkins = NewJenkinsClient(*config)
 	}
 
 	s := newServer(buildInstructions(config, tc.http))
@@ -224,6 +225,13 @@ func runTool(ctx context.Context, name string, args map[string]any) (string, err
 		}
 		return jenkins.triggerBuildTool(ctx, jobPath, argStringMap(args, "parameters"))
 
+	case "jenkins_build_revision":
+		rev, err := resolveRevision(revisionWorkTree(ctx), argString(args, "url"), argString(args, "branch"), argString(args, "sha"))
+		if err != nil {
+			return "", err
+		}
+		return jenkins.buildRevisionTool(ctx, rev)
+
 	case "jenkins_get_job_config":
 		jobPath, err := resolveJobPath(ctx, argString(args, "jobPath"))
 		if err != nil {
@@ -324,6 +332,47 @@ func resolveJobMatches(ctx context.Context) ([]string, error) {
 		}
 	}
 	return matches, nil
+}
+
+func revisionWorkTree(ctx context.Context) context.Context {
+	if cwdFromContext(ctx) != "" {
+		return ctx
+	}
+	for _, root := range rootsForSession(ctx) {
+		if isRepoDir(root) && currentGitRemote(withCwd(ctx, root)) != "" {
+			return withCwd(ctx, root)
+		}
+	}
+	return ctx
+}
+
+var fullSHA = regexp.MustCompile(`^[0-9a-fA-F]{40}$`)
+
+func resolveRevision(ctx context.Context, remote, branch, rev string) (gitRevision, error) {
+	if dir := cwdFromContext(ctx); dir != "" && !isRepoDir(dir) {
+		return gitRevision{}, fmt.Errorf("working directory %q is not an absolute, existing directory — pass url and a full sha, or a valid cwd/repoRoot", dir)
+	}
+	if remote == "" {
+		if remote = currentGitRemote(ctx); remote == "" {
+			return gitRevision{}, fmt.Errorf("url is required (no 'origin' remote in the working tree — pass url, or a cwd/repoRoot argument)")
+		}
+	}
+	if rev == "" {
+		rev = "HEAD"
+		if branch == "" {
+			if b := currentGitBranch(ctx); b != "HEAD" {
+				branch = b
+			}
+		}
+	}
+	if fullSHA.MatchString(rev) {
+		return gitRevision{remote: remote, branch: branch, sha: strings.ToLower(rev)}, nil
+	}
+	sha := safeGit(ctx, "rev-parse", "--verify", "--end-of-options", rev+"^{commit}")
+	if !fullSHA.MatchString(sha) {
+		return gitRevision{}, fmt.Errorf("cannot resolve %q to a commit in the working tree — pass the full 40-character sha", rev)
+	}
+	return gitRevision{remote: remote, branch: branch, sha: sha}, nil
 }
 
 // elicitJobPath asks the connected client to choose one of matches via an MCP
@@ -587,10 +636,11 @@ func writeToolGuide(l *lines) {
 	l.add("- \"what's waiting in the queue\" → `jenkins_get_queue`.")
 	l.add("- \"stop/abort a build\" → `jenkins_stop_build` with jobPath + buildNumber.")
 	l.add("- \"trigger/start a build\" → `jenkins_trigger_build` with jobPath and optional parameters.")
+	l.add("- \"build this exact commit/branch\" (freestyle Git-plugin jobs, where a plain trigger rebuilds the last built revision) → `jenkins_build_revision`; url, branch and sha default to the current repo, branch and HEAD.")
 	l.add("- \"show job config / Jenkinsfile settings\" → `jenkins_get_job_config` with jobPath.")
 	l.add("- \"update job config\" → `jenkins_update_job_config` with jobPath + patch. Get current config first with jenkins_get_job_config.")
 	l.blank()
 	l.add("Job path syntax: nested folders use slashes, e.g. \"platform/api/build-master\". URL-encoding is handled by the tool. Tools also accept `job` as an alias for `jobPath`.")
 	l.blank()
-	l.add("IMPORTANT: `jenkins_trigger_build`, `jenkins_stop_build`, and `jenkins_update_job_config` change Jenkins state. Do not call them without an explicit user instruction. The read tools (build status, logs, tests, queue, job listing/config) are always safe.")
+	l.add("IMPORTANT: `jenkins_trigger_build`, `jenkins_build_revision`, `jenkins_stop_build`, and `jenkins_update_job_config` change Jenkins state. Do not call them without an explicit user instruction. The read tools (build status, logs, tests, queue, job listing/config) are always safe.")
 }

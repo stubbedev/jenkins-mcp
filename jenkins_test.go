@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"os/exec"
 	"strings"
 	"testing"
 )
@@ -141,5 +143,58 @@ func TestRenderStructured(t *testing.T) {
 	tn := renderStructured(v, "toon")
 	if tn == "" || strings.Contains(tn, "\"n\": \"3\"") {
 		t.Errorf("toon render looks wrong: %s", tn)
+	}
+}
+
+func TestResolveRevision(t *testing.T) {
+	dir := t.TempDir()
+	ctx := withCwd(context.Background(), dir)
+	git := func(args ...string) string {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-C", dir, "-c", "user.name=t", "-c", "user.email=t@t"}, args...)...)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	git("init", "-b", "feature/x")
+	git("remote", "add", "origin", "git@host:team/repo.git")
+	git("commit", "--allow-empty", "-m", "one")
+	first := git("rev-parse", "HEAD")
+	git("commit", "--allow-empty", "-m", "two")
+	head := git("rev-parse", "HEAD")
+
+	cases := []struct {
+		name                string
+		ctx                 context.Context
+		remote, branch, rev string
+		want                gitRevision
+	}{
+		{"defaults from working tree", ctx, "", "", "", gitRevision{remote: "git@host:team/repo.git", branch: "feature/x", sha: head}},
+		{"short sha drops branch filter", ctx, "", "", first[:8], gitRevision{remote: "git@host:team/repo.git", sha: first}},
+		{"explicit url, branch and revision", ctx, "https://other/x.git", "main", "HEAD~1", gitRevision{remote: "https://other/x.git", branch: "main", sha: first}},
+		{"full sha needs no repo", context.Background(), "u", "", strings.ToUpper(head), gitRevision{remote: "u", sha: head}},
+	}
+	for _, tc := range cases {
+		got, err := resolveRevision(tc.ctx, tc.remote, tc.branch, tc.rev)
+		if err != nil || got != tc.want {
+			t.Errorf("%s: got %+v, %v; want %+v", tc.name, got, err, tc.want)
+		}
+	}
+
+	for _, tc := range []struct {
+		name string
+		ctx  context.Context
+		rev  string
+		want string
+	}{
+		{"option-shaped revision", ctx, "--output=/tmp/x", "cannot resolve"},
+		{"relative cwd", withCwd(context.Background(), "relative/dir"), "", "not an absolute"},
+		{"no origin remote", withCwd(context.Background(), t.TempDir()), "", "url is required"},
+	} {
+		if _, err := resolveRevision(tc.ctx, "", "", tc.rev); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: want error containing %q, got %v", tc.name, tc.want, err)
+		}
 	}
 }

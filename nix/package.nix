@@ -27,6 +27,7 @@
             );
           };
           vendorHash = "sha256-vlB5cmNGjEu9J68qzb/WosXziJjMfE7of+gsp1RwO/I=";
+          nativeCheckInputs = [ pkgs.git ];
           # Version is embedded from package.json at compile time (see version.go),
           # so no -X ldflag is needed to set it.
           ldflags = [

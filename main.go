@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math"
 	"os"
 	"regexp"
 	"strconv"
@@ -127,37 +126,30 @@ func newServer(instructions string) *mcp.Server {
 				tool.Annotations.IdempotentHint = *a.IdempotentHint
 			}
 		}
-		name := def.Name
+		name, schema := def.Name, def.schema
 		s.AddTool(tool, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-			return dispatch(ctx, req, name)
+			return dispatch(ctx, req, name, schema)
 		})
 	}
 	return s
 }
 
 // dispatch routes a tool call to the matching client method and wraps the result.
-func dispatch(ctx context.Context, req *mcp.CallToolRequest, name string) (*mcp.CallToolResult, error) {
+func dispatch(ctx context.Context, req *mcp.CallToolRequest, name string, schema *schema) (*mcp.CallToolResult, error) {
 	if jenkins == nil {
 		return toolError("Jenkins is not configured. Set url + username + token in ~/.jenkins-mcp.json or via JENKINS_URL / JENKINS_USERNAME / JENKINS_TOKEN env vars."), nil
 	}
-	var rawArgs map[string]any
-	if len(req.Params.Arguments) > 0 {
-		if err := json.Unmarshal(req.Params.Arguments, &rawArgs); err != nil {
-			return toolError("Error: invalid arguments: " + err.Error()), nil
-		}
+	args, err := parseToolArgs(schema, req.Params.Arguments)
+	if err != nil {
+		return toolError("Error: " + err.Error()), nil
 	}
-	args := normalizeArgs(rawArgs)
 	// The server→client round-trips (roots/list, elicitation) need the session,
 	// which the SDK passes on the request; thread it through ctx for git.go/roots.go.
 	ctx = withSession(ctx, req.Session)
 	// A per-call `cwd` (or `repoRoot`) argument overrides any header-supplied
 	// working directory, so a harness that cannot set per-request headers can
 	// still tell the server which repo/working tree to run git in.
-	if dir := argString(args, "cwd"); dir != "" {
-		ctx = withCwd(ctx, dir)
-	} else if dir := argString(args, "repoRoot"); dir != "" {
-		ctx = withCwd(ctx, dir)
-	}
+	ctx = withCwd(ctx, args.str("cwd"))
 	out, err := runTool(ctx, name, args)
 	if err != nil {
 		return toolError("Error: " + err.Error()), nil
@@ -188,103 +180,79 @@ func sessionFromContext(ctx context.Context) *mcp.ServerSession {
 	return ss
 }
 
-func runTool(ctx context.Context, name string, args map[string]any) (string, error) {
+func runTool(ctx context.Context, name string, args toolArgs) (string, error) {
 	switch name {
 	case "jenkins_get_build":
-		ref, err := coerceBuildRef(args["buildNumber"])
-		if err != nil {
-			return "", err
-		}
-		scanLimit, err := argInt(args, "scanLimit")
-		if err != nil {
-			return "", err
-		}
-		jobPath, err := resolveJobPath(ctx, argString(args, "jobPath"))
+		jobPath, err := resolveJobPath(ctx, args.str("jobPath"))
 		if err != nil {
 			return "", err
 		}
 		return jenkins.getBuildOverview(ctx, buildOverviewArgs{
 			jobPath:           jobPath,
-			buildNumber:       ref,
-			sha:               argString(args, "sha"),
-			scanLimit:         scanLimit,
-			includeStages:     argBoolDefault(args, "includeStages", true),
-			includeChangeSet:  argBoolDefault(args, "includeChangeSet", true),
-			includeArtifacts:  argBoolDefault(args, "includeArtifacts", true),
-			includeParameters: argBoolDefault(args, "includeParameters", true),
+			buildNumber:       buildRefArg(args.raw("buildNumber")),
+			sha:               args.str("sha"),
+			scanLimit:         args.integer("scanLimit"),
+			includeStages:     args.boolean("includeStages"),
+			includeChangeSet:  args.boolean("includeChangeSet"),
+			includeArtifacts:  args.boolean("includeArtifacts"),
+			includeParameters: args.boolean("includeParameters"),
 		})
 
 	case "jenkins_get_log":
-		bn, err := coerceBuildNumber(args["buildNumber"])
+		bn, err := buildNumberArg(args.raw("buildNumber"))
 		if err != nil {
 			return "", err
 		}
-		tailChars, err := argInt(args, "tailChars")
+		jobPath, err := resolveJobPath(ctx, args.str("jobPath"))
 		if err != nil {
 			return "", err
 		}
-		jobPath, err := resolveJobPath(ctx, argString(args, "jobPath"))
-		if err != nil {
-			return "", err
-		}
-		return jenkins.getLog(ctx, jobPath, bn, argString(args, "stageId"), tailChars, argBool(args, "full"))
+		return jenkins.getLog(ctx, jobPath, bn, args.str("stageId"), args.integer("tailChars"), args.boolean("full"))
 
 	case "jenkins_get_tests":
-		bn, err := coerceBuildNumber(args["buildNumber"])
+		bn, err := buildNumberArg(args.raw("buildNumber"))
 		if err != nil {
 			return "", err
 		}
-		maxFailures, err := argInt(args, "maxFailures")
+		jobPath, err := resolveJobPath(ctx, args.str("jobPath"))
 		if err != nil {
 			return "", err
 		}
-		jobPath, err := resolveJobPath(ctx, argString(args, "jobPath"))
-		if err != nil {
-			return "", err
-		}
-		return jenkins.getTestsTool(ctx, jobPath, bn, maxFailures, argBoolDefault(args, "includeStackTrace", true))
+		return jenkins.getTestsTool(ctx, jobPath, bn, args.integer("maxFailures"), args.boolean("includeStackTrace"))
 
 	case "jenkins_list_builds":
-		limit, err := argInt(args, "limit")
+		jobPath, err := resolveJobPath(ctx, args.str("jobPath"))
 		if err != nil {
 			return "", err
 		}
-		jobPath, err := resolveJobPath(ctx, argString(args, "jobPath"))
-		if err != nil {
-			return "", err
-		}
-		return jenkins.listJob(ctx, jobPath, limit)
+		return jenkins.listJob(ctx, jobPath, args.integer("limit"))
 
 	case "jenkins_list_jobs":
-		limit, err := argInt(args, "limit")
-		if err != nil {
-			return "", err
-		}
-		return jenkins.listJobsTool(ctx, argString(args, "folder"), limit)
+		return jenkins.listJobsTool(ctx, args.str("folder"), args.integer("limit"))
 
 	case "jenkins_get_queue":
 		return jenkins.getQueueTool(ctx)
 
 	case "jenkins_stop_build":
-		bn, err := coerceBuildNumber(args["buildNumber"])
+		bn, err := buildNumberArg(args.raw("buildNumber"))
 		if err != nil {
 			return "", err
 		}
-		jobPath, err := resolveJobPath(ctx, argString(args, "jobPath"))
+		jobPath, err := resolveJobPath(ctx, args.str("jobPath"))
 		if err != nil {
 			return "", err
 		}
 		return jenkins.stopBuildTool(ctx, jobPath, bn)
 
 	case "jenkins_trigger_build":
-		jobPath, err := resolveJobPath(ctx, argString(args, "jobPath"))
+		jobPath, err := resolveJobPath(ctx, args.str("jobPath"))
 		if err != nil {
 			return "", err
 		}
-		return jenkins.triggerBuildTool(ctx, jobPath, argStringMap(args, "parameters"))
+		return jenkins.triggerBuildTool(ctx, jobPath, stringValues(args.object("parameters")))
 
 	case "jenkins_build_revision":
-		rev, err := resolveRevision(revisionWorkTree(ctx), argString(args, "url"), argString(args, "branch"), argString(args, "sha"))
+		rev, err := resolveRevision(revisionWorkTree(ctx), args.str("url"), args.str("branch"), args.str("sha"))
 		if err != nil {
 			return "", err
 		}
@@ -295,7 +263,7 @@ func runTool(ctx context.Context, name string, args map[string]any) (string, err
 		if err != nil {
 			return "", err
 		}
-		jobPath, err := resolveJobPath(ctx, argString(args, "jobPath"))
+		jobPath, err := resolveJobPath(ctx, args.str("jobPath"))
 		if err != nil {
 			return "", err
 		}
@@ -306,11 +274,11 @@ func runTool(ctx context.Context, name string, args map[string]any) (string, err
 		if err != nil {
 			return "", err
 		}
-		patch, err := parsePatch(args["patch"])
+		patch, err := parsePatch(args.object("patch"))
 		if err != nil {
 			return "", err
 		}
-		jobPath, err := resolveJobPath(ctx, argString(args, "jobPath"))
+		jobPath, err := resolveJobPath(ctx, args.str("jobPath"))
 		if err != nil {
 			return "", err
 		}
@@ -487,125 +455,44 @@ func elicitJobPath(ctx context.Context, matches []string) (string, bool) {
 	return "", false
 }
 
-// ── arg helpers ───────────────────────────────────────────────────────────────
-
-// normalizeArgs accepts `job` as an alias for `jobPath`, matching the TS server.
-func normalizeArgs(args map[string]any) map[string]any {
-	if args == nil {
-		return map[string]any{}
-	}
-	if _, hasJobPath := args["jobPath"].(string); !hasJobPath {
-		if job, ok := args["job"].(string); ok {
-			args["jobPath"] = job
-		}
-	}
-	return args
-}
-
-func argString(args map[string]any, key string) string {
-	if v, ok := args[key].(string); ok {
-		return v
-	}
-	return ""
-}
-
-const maxExactJSONInteger = 1 << 53
-
-func intValue(key string, value any) (int, error) {
-	switch v := value.(type) {
-	case float64:
-		if v == math.Trunc(v) && math.Abs(v) <= maxExactJSONInteger {
-			return int(v), nil
-		}
+func buildRefArg(v any) string {
+	switch ref := v.(type) {
+	case nil:
+		return "lastBuild"
+	case int:
+		return strconv.Itoa(ref)
 	case string:
-		if n, err := strconv.Atoi(v); err == nil {
-			return n, nil
+		return ref
+	}
+	panic(fmt.Sprintf("buildNumber holds %T: the tool code disagrees with its schema", v))
+}
+
+func buildNumberArg(v any) (int, error) {
+	switch n := v.(type) {
+	case int:
+		return n, nil
+	case string:
+		i, err := strconv.Atoi(n)
+		if err != nil {
+			return 0, fmt.Errorf("buildNumber %q: %w", n, err)
 		}
+		return i, nil
 	}
-	shown, _ := json.Marshal(value)
-	return 0, fmt.Errorf("%s must be an integer, got %s", key, shown)
+	panic(fmt.Sprintf("buildNumber holds %T: the tool code disagrees with its schema", v))
 }
 
-func argInt(args map[string]any, key string) (int, error) {
-	v, ok := args[key]
-	if !ok || v == nil {
-		return 0, nil
-	}
-	return intValue(key, v)
-}
-
-func argBool(args map[string]any, key string) bool {
-	b, _ := args[key].(bool)
-	return b
-}
-
-func argBoolDefault(args map[string]any, key string, def bool) bool {
-	if v, ok := args[key].(bool); ok {
-		return v
-	}
-	return def
-}
-
-func argStringMap(args map[string]any, key string) map[string]string {
-	m, ok := args[key].(map[string]any)
-	if !ok {
+func stringValues(m map[string]any) map[string]string {
+	if m == nil {
 		return nil
 	}
 	out := make(map[string]string, len(m))
 	for k, v := range m {
-		switch s := v.(type) {
-		case string:
-			out[k] = s
-		default:
-			b, _ := json.Marshal(v)
-			out[k] = string(b)
-		}
+		out[k] = v.(string)
 	}
 	return out
 }
 
-// coerceBuildRef accepts a number, numeric string, or one of the lastX aliases,
-// returning the value as a string ref usable in the Jenkins API path. Empty
-// input yields "" (caller defaults to lastBuild).
-func coerceBuildRef(value any) (string, error) {
-	switch v := value.(type) {
-	case nil:
-		return "", nil
-	case string:
-		switch v {
-		case "":
-			return "", nil
-		case "lastBuild", "lastSuccessfulBuild", "lastFailedBuild", "lastCompletedBuild":
-			return v, nil
-		}
-		if _, err := strconv.Atoi(v); err != nil {
-			return "", fmt.Errorf("invalid buildNumber %q. Use a number or one of: lastBuild, lastSuccessfulBuild, lastFailedBuild, lastCompletedBuild", v)
-		}
-	}
-	n, err := intValue("buildNumber", value)
-	if err != nil {
-		return "", err
-	}
-	return strconv.Itoa(n), nil
-}
-
-// coerceBuildNumber requires an explicit numeric build number (no aliases).
-func coerceBuildNumber(value any) (int, error) {
-	switch v := value.(type) {
-	case nil:
-		return 0, fmt.Errorf("buildNumber is required")
-	case string:
-		if _, err := strconv.Atoi(v); err != nil {
-			return 0, fmt.Errorf("buildNumber must be a build number (number or numeric string), got %q. Aliases like \"lastBuild\" are not allowed for this tool — call jenkins_get_build first to resolve them", v)
-		}
-	}
-	return intValue("buildNumber", value)
-}
-
-func parsePatch(raw any) (*JobConfig, error) {
-	if raw == nil {
-		return nil, fmt.Errorf("patch is required")
-	}
+func parsePatch(raw map[string]any) (*JobConfig, error) {
 	b, err := json.Marshal(raw)
 	if err != nil {
 		return nil, fmt.Errorf("invalid patch: %w", err)

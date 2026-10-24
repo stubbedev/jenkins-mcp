@@ -36,9 +36,8 @@ func isStatus(err error, status int) bool {
 }
 
 const (
-	defaultLogTailChars = 200_000
-	requestTimeout      = 30 * time.Second
-	logRequestTimeout   = 90 * time.Second
+	requestTimeout    = 30 * time.Second
+	logRequestTimeout = 90 * time.Second
 )
 
 var knownFolderClasses = map[string]bool{
@@ -367,15 +366,11 @@ func (c *JenkinsClient) getBuild(ctx context.Context, jobPath string, ref string
 	return &b, nil
 }
 
-const (
-	maxBuildsPerRequest = 200
-	defaultShaScanLimit = 30
-)
+const maxBuildsPerRequest = 200
 
 func (c *JenkinsClient) listBuilds(ctx context.Context, jobPath string, limit int) ([]buildSummary, error) {
 	segs := jobPathToAPISegments(jobPath)
-	rng := clamp(limit, 1, maxBuildsPerRequest)
-	tree := fmt.Sprintf("builds[number,url,result,building,timestamp,duration,displayName,actions[lastBuiltRevision[SHA1,branch[name]],causes[shortDescription]]]{0,%d}", rng)
+	tree := fmt.Sprintf("builds[number,url,result,building,timestamp,duration,displayName,actions[lastBuiltRevision[SHA1,branch[name]],causes[shortDescription]]]{0,%d}", limit)
 	var res struct {
 		Builds []buildSummary `json:"builds"`
 	}
@@ -396,16 +391,6 @@ func (c *JenkinsClient) findBuildBySha(ctx context.Context, jobPath, sha string,
 		}
 	}
 	return nil, len(builds), nil
-}
-
-func shaScanLimit(requested int) (int, error) {
-	switch {
-	case requested == 0:
-		return defaultShaScanLimit, nil
-	case requested < 0 || requested > maxBuildsPerRequest:
-		return 0, fmt.Errorf("scanLimit must be between 1 and %d, got %d", maxBuildsPerRequest, requested)
-	}
-	return requested, nil
 }
 
 func shaNotFoundMessage(jobPath, sha string, scanned, scanLimit int) string {
@@ -554,8 +539,7 @@ func (c *JenkinsClient) listJobs(ctx context.Context, folder string, limit int) 
 	if folder != "" {
 		base = "/" + jobPathToAPISegments(folder)
 	}
-	rng := clamp(limit, 1, 200)
-	tree := fmt.Sprintf("jobs[name,fullName,url,_class,color,buildable,lastBuild[number,url],lastCompletedBuild[number,url]]{0,%d}", rng)
+	tree := fmt.Sprintf("jobs[name,fullName,url,_class,color,buildable,lastBuild[number,url],lastCompletedBuild[number,url]]{0,%d}", limit)
 	var res struct {
 		Jobs []jobInfo `json:"jobs"`
 	}
@@ -576,30 +560,19 @@ type buildOverviewArgs struct {
 }
 
 func (c *JenkinsClient) getBuildOverview(ctx context.Context, a buildOverviewArgs) (string, error) {
-	if a.jobPath == "" {
-		return "", errors.New("jobPath is required")
-	}
 	var build *buildSummary
 	var err error
 	if a.sha != "" {
-		scan, err := shaScanLimit(a.scanLimit)
-		if err != nil {
-			return "", err
-		}
 		var scanned int
-		build, scanned, err = c.findBuildBySha(ctx, a.jobPath, a.sha, scan)
+		build, scanned, err = c.findBuildBySha(ctx, a.jobPath, a.sha, a.scanLimit)
 		if err != nil {
 			return "", err
 		}
 		if build == nil {
-			return shaNotFoundMessage(a.jobPath, a.sha, scanned, scan), nil
+			return shaNotFoundMessage(a.jobPath, a.sha, scanned, a.scanLimit), nil
 		}
 	} else {
-		ref := a.buildNumber
-		if ref == "" {
-			ref = "lastBuild"
-		}
-		build, err = c.getBuild(ctx, a.jobPath, ref)
+		build, err = c.getBuild(ctx, a.jobPath, a.buildNumber)
 		if err != nil {
 			return "", err
 		}
@@ -715,17 +688,9 @@ func (c *JenkinsClient) getBuildOverview(ctx context.Context, a buildOverviewArg
 }
 
 func (c *JenkinsClient) getLog(ctx context.Context, jobPath string, buildNumber int, stageID string, tailChars int, full bool) (string, error) {
-	if jobPath == "" {
-		return "", errors.New("jobPath is required")
-	}
-	if buildNumber == 0 {
-		return "", errors.New("buildNumber is required")
-	}
 	tail := tailChars
 	if full {
 		tail = 0
-	} else if tail == 0 {
-		tail = defaultLogTailChars
 	}
 
 	if stageID != "" {
@@ -791,12 +756,6 @@ func (c *JenkinsClient) getLog(ctx context.Context, jobPath string, buildNumber 
 }
 
 func (c *JenkinsClient) listJob(ctx context.Context, jobPath string, limit int) (string, error) {
-	if jobPath == "" {
-		return "", errors.New("jobPath is required")
-	}
-	if limit == 0 {
-		limit = 20
-	}
 	builds, err := c.listBuilds(ctx, jobPath, limit)
 	if err != nil {
 		return "", err
@@ -1054,15 +1013,6 @@ func (c *JenkinsClient) updateJobConfigTool(ctx context.Context, jobPath string,
 }
 
 func (c *JenkinsClient) getTestsTool(ctx context.Context, jobPath string, buildNumber, maxFailures int, includeStackTrace bool) (string, error) {
-	if jobPath == "" {
-		return "", errors.New("jobPath is required")
-	}
-	if buildNumber == 0 {
-		return "", errors.New("buildNumber is required")
-	}
-	if maxFailures == 0 {
-		maxFailures = 25
-	}
 	report, err := c.getTestReport(ctx, jobPath, buildNumber)
 	if err != nil {
 		return "", err
@@ -1380,16 +1330,6 @@ func orDefault(s, def string) string {
 		return def
 	}
 	return s
-}
-
-func clamp(v, lo, hi int) int {
-	if v < lo {
-		return lo
-	}
-	if v > hi {
-		return hi
-	}
-	return v
 }
 
 // lines is a small string-builder for newline-joined output.

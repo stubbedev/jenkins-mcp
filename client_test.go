@@ -30,7 +30,7 @@ func TestGetBuildOverview(t *testing.T) {
 	defer srv.Close()
 
 	out, err := c.getBuildOverview(context.Background(), buildOverviewArgs{
-		jobPath: "demo", includeStages: true, includeChangeSet: true, includeArtifacts: true, includeParameters: true,
+		jobPath: "demo", buildNumber: "lastBuild", includeStages: true, includeChangeSet: true, includeArtifacts: true, includeParameters: true,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -332,7 +332,7 @@ func TestGetBuildByShaReportsScanCoverage(t *testing.T) {
 		want          []string
 	}{
 		{"job retains fewer builds than the bound", 21, 200, 200, []string{"Scanned all 21 build(s) the job still retains (scanLimit 200)", "build retention"}},
-		{"default bound reached", 100, 0, 30, []string{"in the 30 most recent build(s) scanned (scanLimit 30)", "increase scanLimit (max 200)"}},
+		{"default bound reached", 100, 30, 30, []string{"in the 30 most recent build(s) scanned (scanLimit 30)", "increase scanLimit (max 200)"}},
 		{"maximum bound reached", 300, 200, 200, []string{"in the 200 most recent build(s) scanned (scanLimit 200, the maximum)", "pass buildNumber"}},
 	}
 	for _, tc := range cases {
@@ -349,20 +349,6 @@ func TestGetBuildByShaReportsScanCoverage(t *testing.T) {
 			if !strings.Contains(out, s) {
 				t.Errorf("%s: output missing %q:\n%s", tc.name, s, out)
 			}
-		}
-	}
-}
-
-func TestGetBuildByShaRejectsOutOfRangeScanLimit(t *testing.T) {
-	for _, limit := range []int{-1, 201} {
-		requested := -1
-		c := shaScanServer(t, 10, &requested)
-		_, err := c.getBuildOverview(context.Background(), buildOverviewArgs{jobPath: "demo", sha: "bbbbbbbb", scanLimit: limit})
-		if err == nil || !strings.Contains(err.Error(), "scanLimit must be between 1 and 200") {
-			t.Errorf("scanLimit %d: want range error, got %v", limit, err)
-		}
-		if requested != -1 {
-			t.Errorf("scanLimit %d: Jenkins was queried despite the invalid bound", limit)
 		}
 	}
 }

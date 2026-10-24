@@ -11,31 +11,47 @@
       "properties": {
         "jobPath": {
           "type": "string",
-          "description": "Jenkins job path. Use slashes for nested folders, e.g. \"platform/api/build-master\". If omitted, the server tries to resolve from the current git remote via repoJobMap (and prompts for a pick when multiple match)."
+          "description": "Jenkins job path. Use slashes for nested folders, e.g. \"platform/api/build-master\". If omitted, the server tries to resolve from the current git remote via repoJobMap (and prompts for a pick when multiple match).",
+          "minLength": 1,
+          "pattern": "^[^/]+(/[^/]+)*$"
         },
         "job": {
           "type": "string",
-          "description": "Alias for jobPath."
+          "description": "Alias for jobPath.",
+          "minLength": 1,
+          "pattern": "^[^/]+(/[^/]+)*$"
         },
         "cwd": {
           "type": "string",
-          "description": "Working directory (repo root) to run git in when jobPath is omitted and must be resolved from the current git remote. Use in HTTP mode where the server has no checkout of its own; the calling harness supplies the path. Ignored when jobPath is given. `repoRoot` is accepted as an alias."
+          "description": "Working directory (repo root) to run git in when jobPath is omitted and must be resolved from the current git remote. Use in HTTP mode where the server has no checkout of its own; the calling harness supplies the path. Ignored when jobPath is given. `repoRoot` is accepted as an alias.",
+          "minLength": 1
+        },
+        "repoRoot": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Alias for cwd."
         },
         "buildNumber": {
           "type": [
-            "number",
+            "integer",
             "string"
           ],
-          "description": "Build number (e.g. 42), or one of \"lastBuild\", \"lastSuccessfulBuild\", \"lastFailedBuild\", \"lastCompletedBuild\" (default: lastBuild)"
+          "description": "Build number (e.g. 42), or one of \"lastBuild\", \"lastSuccessfulBuild\", \"lastFailedBuild\", \"lastCompletedBuild\" (default: lastBuild)",
+          "minimum": 1,
+          "pattern": "^([1-9][0-9]*|lastBuild|lastSuccessfulBuild|lastFailedBuild|lastCompletedBuild)$"
         },
         "sha": {
           "type": "string",
-          "description": "Find the most recent build whose lastBuiltRevision matches this commit SHA (full or 7+ char prefix). Overrides buildNumber."
+          "description": "Find the most recent build whose lastBuiltRevision matches this commit SHA (full or 7+ char prefix). Overrides buildNumber.",
+          "minLength": 1,
+          "pattern": "^[0-9a-fA-F]{7,40}$"
         },
         "scanLimit": {
-          "type": "number",
+          "type": "integer",
           "description": "How many recent builds to scan when sha is provided (default 30, 1-200; anything else is rejected). Increase for repos with many builds per commit. A miss reports how many builds were scanned and whether the job retains older ones.",
-          "default": 30
+          "default": 30,
+          "minimum": 1,
+          "maximum": 200
         },
         "includeStages": {
           "type": "boolean",
@@ -57,7 +73,8 @@
           "description": "Include build parameters (default true)",
           "default": true
         }
-      }
+      },
+      "additionalProperties": false
     }
   },
   {
@@ -66,47 +83,62 @@
       "readOnlyHint": true,
       "openWorldHint": true
     },
-    "description": "Fetch the console log for a Jenkins build. Use when diagnosing a failure after jenkins_get_build shows result=FAILURE/UNSTABLE. By default returns the tail (last 200KB) to stay within context \u2014 pass full=true for everything, or tailChars to set a different cap. For Pipeline jobs, pass stageId (from jenkins_get_build output) to get just that stage's logs, which is dramatically smaller and more focused than the whole console.",
+    "description": "Fetch the console log for a Jenkins build. Use when diagnosing a failure after jenkins_get_build shows result=FAILURE/UNSTABLE. By default returns the tail (last 200KB) to stay within context — pass full=true for everything, or tailChars to set a different cap. For Pipeline jobs, pass stageId (from jenkins_get_build output) to get just that stage's logs, which is dramatically smaller and more focused than the whole console.",
     "inputSchema": {
       "type": "object",
       "properties": {
         "jobPath": {
           "type": "string",
-          "description": "Jenkins job path (auto-resolved from current repo when omitted)."
+          "description": "Jenkins job path (auto-resolved from current repo when omitted).",
+          "minLength": 1,
+          "pattern": "^[^/]+(/[^/]+)*$"
         },
         "job": {
           "type": "string",
-          "description": "Alias for jobPath."
+          "description": "Alias for jobPath.",
+          "minLength": 1,
+          "pattern": "^[^/]+(/[^/]+)*$"
         },
         "cwd": {
           "type": "string",
-          "description": "Working directory (repo root) to run git in when jobPath is omitted and must be resolved from the current git remote. Use in HTTP mode where the server has no checkout of its own; the calling harness supplies the path. Ignored when jobPath is given. `repoRoot` is accepted as an alias."
+          "description": "Working directory (repo root) to run git in when jobPath is omitted and must be resolved from the current git remote. Use in HTTP mode where the server has no checkout of its own; the calling harness supplies the path. Ignored when jobPath is given. `repoRoot` is accepted as an alias.",
+          "minLength": 1
+        },
+        "repoRoot": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Alias for cwd."
         },
         "buildNumber": {
           "type": [
-            "number",
+            "integer",
             "string"
           ],
-          "description": "Build number to fetch the log for (numeric)."
+          "description": "Build number to fetch the log for (numeric).",
+          "minimum": 1,
+          "pattern": "^[1-9][0-9]*$"
         },
         "stageId": {
           "type": "string",
-          "description": "Optional Pipeline stage id (from jenkins_get_build). Returns just that stage's per-step logs."
+          "description": "Optional Pipeline stage id (from jenkins_get_build). Returns just that stage's per-step logs.",
+          "minLength": 1
         },
         "tailChars": {
-          "type": "number",
+          "type": "integer",
           "description": "Return only the last N characters (default 200000). Ignored if full=true.",
-          "default": 200000
+          "default": 200000,
+          "minimum": 1
         },
         "full": {
           "type": "boolean",
-          "description": "Return the entire log without truncation. Use sparingly \u2014 large jobs can produce megabytes.",
+          "description": "Return the entire log without truncation. Use sparingly — large jobs can produce megabytes.",
           "default": false
         }
       },
       "required": [
         "buildNumber"
-      ]
+      ],
+      "additionalProperties": false
     }
   },
   {
@@ -115,33 +147,46 @@
       "readOnlyHint": true,
       "openWorldHint": true
     },
-    "description": "Fetch the test report for a build. Use when asked \"which tests failed?\" or \"why did this build fail?\" \u2014 surfaces failed test names, classes, and stack traces directly, which is far more useful than grepping the console log. Returns 404 gracefully when the job does not publish JUnit/xUnit results.",
+    "description": "Fetch the test report for a build. Use when asked \"which tests failed?\" or \"why did this build fail?\" — surfaces failed test names, classes, and stack traces directly, which is far more useful than grepping the console log. Returns 404 gracefully when the job does not publish JUnit/xUnit results.",
     "inputSchema": {
       "type": "object",
       "properties": {
         "jobPath": {
           "type": "string",
-          "description": "Jenkins job path (auto-resolved from current repo when omitted)."
+          "description": "Jenkins job path (auto-resolved from current repo when omitted).",
+          "minLength": 1,
+          "pattern": "^[^/]+(/[^/]+)*$"
         },
         "job": {
           "type": "string",
-          "description": "Alias for jobPath."
+          "description": "Alias for jobPath.",
+          "minLength": 1,
+          "pattern": "^[^/]+(/[^/]+)*$"
         },
         "cwd": {
           "type": "string",
-          "description": "Working directory (repo root) to run git in when jobPath is omitted and must be resolved from the current git remote. Use in HTTP mode where the server has no checkout of its own; the calling harness supplies the path. Ignored when jobPath is given. `repoRoot` is accepted as an alias."
+          "description": "Working directory (repo root) to run git in when jobPath is omitted and must be resolved from the current git remote. Use in HTTP mode where the server has no checkout of its own; the calling harness supplies the path. Ignored when jobPath is given. `repoRoot` is accepted as an alias.",
+          "minLength": 1
+        },
+        "repoRoot": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Alias for cwd."
         },
         "buildNumber": {
           "type": [
-            "number",
+            "integer",
             "string"
           ],
-          "description": "Build number (numeric)."
+          "description": "Build number (numeric).",
+          "minimum": 1,
+          "pattern": "^[1-9][0-9]*$"
         },
         "maxFailures": {
-          "type": "number",
+          "type": "integer",
           "description": "Max failed cases to print (default 25)",
-          "default": 25
+          "default": 25,
+          "minimum": 1
         },
         "includeStackTrace": {
           "type": "boolean",
@@ -151,7 +196,8 @@
       },
       "required": [
         "buildNumber"
-      ]
+      ],
+      "additionalProperties": false
     }
   },
   {
@@ -166,22 +212,35 @@
       "properties": {
         "jobPath": {
           "type": "string",
-          "description": "Jenkins job path (auto-resolved from current repo when omitted)."
+          "description": "Jenkins job path (auto-resolved from current repo when omitted).",
+          "minLength": 1,
+          "pattern": "^[^/]+(/[^/]+)*$"
         },
         "job": {
           "type": "string",
-          "description": "Alias for jobPath."
+          "description": "Alias for jobPath.",
+          "minLength": 1,
+          "pattern": "^[^/]+(/[^/]+)*$"
         },
         "cwd": {
           "type": "string",
-          "description": "Working directory (repo root) to run git in when jobPath is omitted and must be resolved from the current git remote. Use in HTTP mode where the server has no checkout of its own; the calling harness supplies the path. Ignored when jobPath is given. `repoRoot` is accepted as an alias."
+          "description": "Working directory (repo root) to run git in when jobPath is omitted and must be resolved from the current git remote. Use in HTTP mode where the server has no checkout of its own; the calling harness supplies the path. Ignored when jobPath is given. `repoRoot` is accepted as an alias.",
+          "minLength": 1
+        },
+        "repoRoot": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Alias for cwd."
         },
         "limit": {
-          "type": "number",
+          "type": "integer",
           "description": "Max builds to return (default 20, max 200)",
-          "default": 20
+          "default": 20,
+          "minimum": 1,
+          "maximum": 200
         }
-      }
+      },
+      "additionalProperties": false
     }
   },
   {
@@ -190,20 +249,25 @@
       "readOnlyHint": true,
       "openWorldHint": true
     },
-    "description": "List jobs in Jenkins, either at the root or inside a folder. Use to discover the right jobPath when none is mapped, or to browse a multibranch folder. Folder entries are tagged [folder] \u2014 pass them back as the folder arg to descend.",
+    "description": "List jobs in Jenkins, either at the root or inside a folder. Use to discover the right jobPath when none is mapped, or to browse a multibranch folder. Folder entries are tagged [folder] — pass them back as the folder arg to descend.",
     "inputSchema": {
       "type": "object",
       "properties": {
         "folder": {
           "type": "string",
-          "description": "Folder path to list (e.g. \"platform/api\"). Omit for top-level jobs."
+          "description": "Folder path to list (e.g. \"platform/api\"). Omit for top-level jobs.",
+          "minLength": 1,
+          "pattern": "^[^/]+(/[^/]+)*$"
         },
         "limit": {
-          "type": "number",
+          "type": "integer",
           "description": "Max entries (default 50, max 200)",
-          "default": 50
+          "default": 50,
+          "minimum": 1,
+          "maximum": 200
         }
-      }
+      },
+      "additionalProperties": false
     }
   },
   {
@@ -215,7 +279,8 @@
     "description": "Show items currently waiting in the Jenkins build queue. Use when asked \"is anything waiting to build?\", \"why hasn't the build started?\", or to see what would run if executors freed up.",
     "inputSchema": {
       "type": "object",
-      "properties": {}
+      "properties": {},
+      "additionalProperties": false
     }
   },
   {
@@ -225,33 +290,46 @@
       "destructiveHint": true,
       "openWorldHint": true
     },
-    "description": "Abort a running Jenkins build. Use when asked to \"stop\", \"cancel\", or \"abort\" a build. Sends a stop signal \u2014 the build may take a few seconds to terminate. Has no effect on builds that are already complete.",
+    "description": "Abort a running Jenkins build. Use when asked to \"stop\", \"cancel\", or \"abort\" a build. Sends a stop signal — the build may take a few seconds to terminate. Has no effect on builds that are already complete.",
     "inputSchema": {
       "type": "object",
       "properties": {
         "jobPath": {
           "type": "string",
-          "description": "Jenkins job path."
+          "description": "Jenkins job path.",
+          "minLength": 1,
+          "pattern": "^[^/]+(/[^/]+)*$"
         },
         "job": {
           "type": "string",
-          "description": "Alias for jobPath."
+          "description": "Alias for jobPath.",
+          "minLength": 1,
+          "pattern": "^[^/]+(/[^/]+)*$"
         },
         "cwd": {
           "type": "string",
-          "description": "Working directory (repo root) to run git in when jobPath is omitted and must be resolved from the current git remote. Use in HTTP mode where the server has no checkout of its own; the calling harness supplies the path. Ignored when jobPath is given. `repoRoot` is accepted as an alias."
+          "description": "Working directory (repo root) to run git in when jobPath is omitted and must be resolved from the current git remote. Use in HTTP mode where the server has no checkout of its own; the calling harness supplies the path. Ignored when jobPath is given. `repoRoot` is accepted as an alias.",
+          "minLength": 1
+        },
+        "repoRoot": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Alias for cwd."
         },
         "buildNumber": {
           "type": [
-            "number",
+            "integer",
             "string"
           ],
-          "description": "Build number to stop (numeric)."
+          "description": "Build number to stop (numeric).",
+          "minimum": 1,
+          "pattern": "^[1-9][0-9]*$"
         }
       },
       "required": [
         "buildNumber"
-      ]
+      ],
+      "additionalProperties": false
     }
   },
   {
@@ -262,21 +340,31 @@
       "idempotentHint": false,
       "openWorldHint": true
     },
-    "description": "Trigger a new Jenkins build, optionally with parameters. Use when asked to \"run\", \"start\", \"kick off\", or \"trigger\" a build. Returns a queue item URL \u2014 use jenkins_get_queue to monitor it, or jenkins_list_builds once it starts.",
+    "description": "Trigger a new Jenkins build, optionally with parameters. Use when asked to \"run\", \"start\", \"kick off\", or \"trigger\" a build. Returns a queue item URL — use jenkins_get_queue to monitor it, or jenkins_list_builds once it starts.",
     "inputSchema": {
       "type": "object",
       "properties": {
         "jobPath": {
           "type": "string",
-          "description": "Jenkins job path."
+          "description": "Jenkins job path.",
+          "minLength": 1,
+          "pattern": "^[^/]+(/[^/]+)*$"
         },
         "job": {
           "type": "string",
-          "description": "Alias for jobPath."
+          "description": "Alias for jobPath.",
+          "minLength": 1,
+          "pattern": "^[^/]+(/[^/]+)*$"
         },
         "cwd": {
           "type": "string",
-          "description": "Working directory (repo root) to run git in when jobPath is omitted and must be resolved from the current git remote. Use in HTTP mode where the server has no checkout of its own; the calling harness supplies the path. Ignored when jobPath is given. `repoRoot` is accepted as an alias."
+          "description": "Working directory (repo root) to run git in when jobPath is omitted and must be resolved from the current git remote. Use in HTTP mode where the server has no checkout of its own; the calling harness supplies the path. Ignored when jobPath is given. `repoRoot` is accepted as an alias.",
+          "minLength": 1
+        },
+        "repoRoot": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Alias for cwd."
         },
         "parameters": {
           "type": "object",
@@ -285,7 +373,8 @@
             "type": "string"
           }
         }
-      }
+      },
+      "additionalProperties": false
     }
   },
   {
@@ -302,21 +391,31 @@
       "properties": {
         "url": {
           "type": "string",
-          "description": "Git remote URL the jobs are configured with. Default: the current repo's origin remote."
+          "description": "Git remote URL the jobs are configured with. Default: the current repo's origin remote.",
+          "minLength": 1
         },
         "branch": {
           "type": "string",
-          "description": "Branch name, matched against each job's branch spec. Default: the current branch when sha is omitted; no branch filter when sha is given."
+          "description": "Branch name, matched against each job's branch spec. Default: the current branch when sha is omitted; no branch filter when sha is given.",
+          "minLength": 1
         },
         "sha": {
           "type": "string",
-          "description": "Commit to build: a full 40-char SHA, or any revision git can resolve in the working tree (short SHA, HEAD~1, a branch). Default: HEAD."
+          "description": "Commit to build: a full 40-char SHA, or any revision git can resolve in the working tree (short SHA, HEAD~1, a branch). Default: HEAD.",
+          "minLength": 1
         },
         "cwd": {
           "type": "string",
-          "description": "Working directory (repo root) to run git in when url, branch or sha must be resolved from the working tree. Use in HTTP mode where the server has no checkout of its own. `repoRoot` is accepted as an alias."
+          "description": "Working directory (repo root) to run git in when url, branch or sha must be resolved from the working tree. Use in HTTP mode where the server has no checkout of its own. `repoRoot` is accepted as an alias.",
+          "minLength": 1
+        },
+        "repoRoot": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Alias for cwd."
         }
-      }
+      },
+      "additionalProperties": false
     }
   },
   {
@@ -331,15 +430,25 @@
       "properties": {
         "jobPath": {
           "type": "string",
-          "description": "Jenkins job path."
+          "description": "Jenkins job path.",
+          "minLength": 1,
+          "pattern": "^[^/]+(/[^/]+)*$"
         },
         "job": {
           "type": "string",
-          "description": "Alias for jobPath."
+          "description": "Alias for jobPath.",
+          "minLength": 1,
+          "pattern": "^[^/]+(/[^/]+)*$"
         },
         "cwd": {
           "type": "string",
-          "description": "Working directory (repo root) to run git in when jobPath is omitted and must be resolved from the current git remote. Use in HTTP mode where the server has no checkout of its own; the calling harness supplies the path. Ignored when jobPath is given. `repoRoot` is accepted as an alias."
+          "description": "Working directory (repo root) to run git in when jobPath is omitted and must be resolved from the current git remote. Use in HTTP mode where the server has no checkout of its own; the calling harness supplies the path. Ignored when jobPath is given. `repoRoot` is accepted as an alias.",
+          "minLength": 1
+        },
+        "repoRoot": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Alias for cwd."
         },
         "format": {
           "type": "string",
@@ -347,10 +456,11 @@
             "toon",
             "json"
           ],
-          "description": "Output serialization: \"toon\" (default, fewer tokens) or \"json\".",
-          "default": "toon"
+          "description": "Output serialization: \"toon\" (fewer tokens) or \"json\". Default: JENKINS_MCP_FORMAT, else toon.",
+          "minLength": 1
         }
-      }
+      },
+      "additionalProperties": false
     }
   },
   {
@@ -361,21 +471,31 @@
       "idempotentHint": true,
       "openWorldHint": true
     },
-    "description": "Patch the configuration of a Jenkins job. Call jenkins_get_job_config first to see the current state, then pass only the fields you want to change. Partial updates are supported \u2014 omitted fields are left unchanged. Use to change description, pipeline script, Jenkinsfile path, build triggers, parameters, or retention settings.",
+    "description": "Patch the configuration of a Jenkins job. Call jenkins_get_job_config first to see the current state, then pass only the fields you want to change. Partial updates are supported — omitted fields are left unchanged. Use to change description, pipeline script, Jenkinsfile path, build triggers, parameters, or retention settings.",
     "inputSchema": {
       "type": "object",
       "properties": {
         "jobPath": {
           "type": "string",
-          "description": "Jenkins job path."
+          "description": "Jenkins job path.",
+          "minLength": 1,
+          "pattern": "^[^/]+(/[^/]+)*$"
         },
         "job": {
           "type": "string",
-          "description": "Alias for jobPath."
+          "description": "Alias for jobPath.",
+          "minLength": 1,
+          "pattern": "^[^/]+(/[^/]+)*$"
         },
         "cwd": {
           "type": "string",
-          "description": "Working directory (repo root) to run git in when jobPath is omitted and must be resolved from the current git remote. Use in HTTP mode where the server has no checkout of its own; the calling harness supplies the path. Ignored when jobPath is given. `repoRoot` is accepted as an alias."
+          "description": "Working directory (repo root) to run git in when jobPath is omitted and must be resolved from the current git remote. Use in HTTP mode where the server has no checkout of its own; the calling harness supplies the path. Ignored when jobPath is given. `repoRoot` is accepted as an alias.",
+          "minLength": 1
+        },
+        "repoRoot": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Alias for cwd."
         },
         "format": {
           "type": "string",
@@ -383,12 +503,12 @@
             "toon",
             "json"
           ],
-          "description": "Output serialization for the returned config: \"toon\" (default) or \"json\".",
-          "default": "toon"
+          "description": "Output serialization: \"toon\" (fewer tokens) or \"json\". Default: JENKINS_MCP_FORMAT, else toon.",
+          "minLength": 1
         },
         "patch": {
           "type": "object",
-          "description": "Fields to update. All fields are optional \u2014 only provided fields are changed. triggers replaces the job's cron and scmPoll triggers, so start from the list jenkins_get_job_config returns; other trigger kinds (listed read-only in otherTriggers) are kept. Unknown fields, including the read-only scm and buildRevision from jenkins_get_job_config, are rejected.",
+          "description": "Fields to update. All fields are optional — only provided fields are changed. triggers replaces the job's cron and scmPoll triggers, so start from the list jenkins_get_job_config returns; other trigger kinds (listed read-only in otherTriggers) are kept. Unknown fields, including the read-only scm and buildRevision from jenkins_get_job_config, are rejected.",
           "properties": {
             "description": {
               "type": "string"
@@ -422,7 +542,8 @@
                   "type": "boolean",
                   "description": "Lightweight checkout for Jenkinsfile (scm type only, default true)."
                 }
-              }
+              },
+              "additionalProperties": false
             },
             "triggers": {
               "type": "array",
@@ -448,7 +569,8 @@
                 "required": [
                   "type",
                   "spec"
-                ]
+                ],
+                "additionalProperties": false
               }
             },
             "parameters": {
@@ -485,28 +607,32 @@
                 "required": [
                   "type",
                   "name"
-                ]
+                ],
+                "additionalProperties": false
               }
             },
             "buildRetention": {
               "type": "object",
               "properties": {
                 "numToKeep": {
-                  "type": "number",
+                  "type": "integer",
                   "description": "Max builds to keep (-1 = unlimited)."
                 },
                 "daysToKeep": {
-                  "type": "number",
+                  "type": "integer",
                   "description": "Max days to keep builds (-1 = unlimited)."
                 }
-              }
+              },
+              "additionalProperties": false
             }
-          }
+          },
+          "additionalProperties": false
         }
       },
       "required": [
         "patch"
-      ]
+      ],
+      "additionalProperties": false
     }
   }
 ]

@@ -221,7 +221,7 @@ func TestCallToolRejectsNonNumericLimit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CallTool: %v", err)
 	}
-	if !res.IsError || !strings.Contains(resultText(res), `limit must be an integer, got "ten"`) {
+	if !res.IsError || !strings.Contains(resultText(res), `limit must be integer, got "ten"`) {
 		t.Errorf("want an error naming limit and the value, got %q", resultText(res))
 	}
 }
@@ -242,7 +242,7 @@ func TestUpdateJobConfigRejectsBadFormatBeforeWriting(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CallTool: %v", err)
 	}
-	if !res.IsError || !strings.Contains(resultText(res), `format must be "toon" or "json", got "yaml"`) {
+	if !res.IsError || !strings.Contains(resultText(res), `format must be one of ["toon","json"], got "yaml"`) {
 		t.Errorf("want a format error, got %q", resultText(res))
 	}
 }

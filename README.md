@@ -437,6 +437,7 @@ If none of these yields a repo (e.g. stateless mode with no header, or no root m
 ## Notes
 
 - Authentication is HTTP Basic with `username:apitoken` (Jenkins's standard mechanism).
+- Tool arguments are validated against each tool's input schema in `tools.json`, which is also where defaults and limits live. A wrong type (`full: "true"`), an out-of-range number, an empty string, an unknown argument or a typo in a patch field is rejected with the argument name and the value sent, instead of being coerced or ignored. `job` and `repoRoot` are aliases for `jobPath` and `cwd`; passing both forms is an error.
 - Write operations (`jenkins_trigger_build`, `jenkins_build_revision`, `jenkins_stop_build`, `jenkins_update_job_config`) require the API token user to have the appropriate Jenkins permissions.
 - `jenkins_build_revision` calls the Git plugin's `notifyCommit` endpoint, which schedules a build of the given `sha1` on every job whose remote matches `url` and whose branch spec matches `branch`, and which has **Poll SCM** enabled (an empty schedule is enough). Since Git plugin 4.11 the endpoint needs its own access token: create one under **Manage Jenkins → Security → Git plugin notifyCommit access tokens** and set it as `notifyCommitToken` in the config file (or `JENKINS_NOTIFY_COMMIT_TOKEN`).
 - CSRF crumb handling is automatic — API tokens bypass the crumb check on most Jenkins installations, but the server fetches and caches a crumb for installations that require it.

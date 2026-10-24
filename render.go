@@ -25,17 +25,11 @@ func parseOutputFormat(s string) (outputFormat, error) {
 	return "", fmt.Errorf("format must be %q or %q, got %q", formatTOON, formatJSON, s)
 }
 
-func pickFormat(args map[string]any) (outputFormat, error) {
-	v, ok := args["format"]
-	if !ok || v == nil {
+func pickFormat(args toolArgs) (outputFormat, error) {
+	if !args.has("format") {
 		return defaultFormat, nil
 	}
-	s, ok := v.(string)
-	if !ok {
-		shown, _ := json.Marshal(v)
-		return "", fmt.Errorf("format must be a string, got %s", shown)
-	}
-	return parseOutputFormat(s)
+	return parseOutputFormat(args.str("format"))
 }
 
 func renderStructured(v any, format outputFormat) (string, error) {

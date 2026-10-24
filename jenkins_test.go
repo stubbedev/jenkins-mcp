@@ -7,62 +7,6 @@ import (
 	"testing"
 )
 
-func TestCoerceBuildRef(t *testing.T) {
-	cases := []struct {
-		in      any
-		want    string
-		wantErr bool
-	}{
-		{nil, "", false},
-		{float64(42), "42", false},
-		{"42", "42", false},
-		{"", "", false},
-		{"lastBuild", "lastBuild", false},
-		{"lastSuccessfulBuild", "lastSuccessfulBuild", false},
-		{"garbage", "", true},
-		{true, "", true},
-	}
-	for _, c := range cases {
-		got, err := coerceBuildRef(c.in)
-		if c.wantErr {
-			if err == nil {
-				t.Errorf("coerceBuildRef(%v): want error, got %q", c.in, got)
-			}
-			continue
-		}
-		if err != nil || got != c.want {
-			t.Errorf("coerceBuildRef(%v) = %q, %v; want %q", c.in, got, err, c.want)
-		}
-	}
-}
-
-func TestCoerceBuildNumber(t *testing.T) {
-	if n, err := coerceBuildNumber(float64(7)); err != nil || n != 7 {
-		t.Errorf("coerceBuildNumber(7.0) = %d, %v", n, err)
-	}
-	if n, err := coerceBuildNumber("12"); err != nil || n != 12 {
-		t.Errorf("coerceBuildNumber(\"12\") = %d, %v", n, err)
-	}
-	if _, err := coerceBuildNumber("lastBuild"); err == nil {
-		t.Error("coerceBuildNumber(lastBuild): want error")
-	}
-	if _, err := coerceBuildNumber(nil); err == nil {
-		t.Error("coerceBuildNumber(nil): want error")
-	}
-}
-
-func TestNormalizeArgsJobAlias(t *testing.T) {
-	args := normalizeArgs(map[string]any{"job": "folder/x"})
-	if args["jobPath"] != "folder/x" {
-		t.Errorf("job alias not applied: %v", args)
-	}
-	// explicit jobPath wins over job
-	args = normalizeArgs(map[string]any{"job": "a", "jobPath": "b"})
-	if args["jobPath"] != "b" {
-		t.Errorf("jobPath should win: %v", args)
-	}
-}
-
 func TestJobPathToAPISegments(t *testing.T) {
 	if got := jobPathToAPISegments("platform/api/build master"); got != "job/platform/job/api/job/build%20master" {
 		t.Errorf("segments = %q", got)
@@ -121,26 +65,14 @@ func TestExtractCommitAndBranch(t *testing.T) {
 }
 
 func TestPickFormat(t *testing.T) {
-	defaultFormat = formatTOON
-	cases := []struct {
-		args    map[string]any
-		want    outputFormat
-		wantErr string
-	}{
-		{map[string]any{"format": "json"}, formatJSON, ""},
-		{map[string]any{}, formatTOON, ""},
-		{map[string]any{"format": "bogus"}, "", `format must be "toon" or "json", got "bogus"`},
-		{map[string]any{"format": "JSON"}, "", `got "JSON"`},
-		{map[string]any{"format": 1.0}, "", "format must be a string, got 1"},
+	saved := defaultFormat
+	t.Cleanup(func() { defaultFormat = saved })
+	defaultFormat = formatJSON
+	if got, err := pickFormat(toolArgs{values: map[string]any{"format": "toon"}}); err != nil || got != formatTOON {
+		t.Errorf("explicit toon: %q, %v", got, err)
 	}
-	for _, c := range cases {
-		got, err := pickFormat(c.args)
-		switch {
-		case c.wantErr == "" && (err != nil || got != c.want):
-			t.Errorf("pickFormat(%v) = %q, %v; want %q", c.args, got, err, c.want)
-		case c.wantErr != "" && (err == nil || !strings.Contains(err.Error(), c.wantErr)):
-			t.Errorf("pickFormat(%v) = %q, %v; want error containing %q", c.args, got, err, c.wantErr)
-		}
+	if got, err := pickFormat(toolArgs{values: map[string]any{}}); err != nil || got != formatJSON {
+		t.Errorf("absent format must use the process default: %q, %v", got, err)
 	}
 }
 
@@ -222,47 +154,5 @@ func TestParsePatchRejectsUnknownFields(t *testing.T) {
 		if _, err := parsePatch(map[string]any{field: "x"}); err == nil || !strings.Contains(err.Error(), field) {
 			t.Errorf("patch with %q: want unknown-field error, got %v", field, err)
 		}
-	}
-}
-
-func TestArgIntRejectsNonIntegers(t *testing.T) {
-	ok := map[string]struct {
-		in   any
-		want int
-	}{
-		"absent":         {nil, 0},
-		"json number":    {float64(30), 30},
-		"numeric string": {"40", 40},
-		"negative":       {float64(-2), -2},
-	}
-	for name, c := range ok {
-		args := map[string]any{}
-		if c.in != nil {
-			args["limit"] = c.in
-		}
-		if got, err := argInt(args, "limit"); err != nil || got != c.want {
-			t.Errorf("%s: argInt = %d, %v; want %d", name, got, err, c.want)
-		}
-	}
-	bad := map[string]struct {
-		in   any
-		want string
-	}{
-		"word":     {"ten", `limit must be an integer, got "ten"`},
-		"fraction": {2.5, "limit must be an integer, got 2.5"},
-		"boolean":  {true, "limit must be an integer, got true"},
-		"huge":     {1e300, "limit must be an integer, got 1e+300"},
-		"empty":    {"", `limit must be an integer, got ""`},
-	}
-	for name, c := range bad {
-		if got, err := argInt(map[string]any{"limit": c.in}, "limit"); err == nil || err.Error() != c.want {
-			t.Errorf("%s: argInt = %d, %v; want error %q", name, got, err, c.want)
-		}
-	}
-	if _, err := coerceBuildNumber(4.5); err == nil || !strings.Contains(err.Error(), "buildNumber must be an integer, got 4.5") {
-		t.Errorf("coerceBuildNumber(4.5): want integer error, got %v", err)
-	}
-	if _, err := coerceBuildRef(4.5); err == nil || !strings.Contains(err.Error(), "buildNumber must be an integer, got 4.5") {
-		t.Errorf("coerceBuildRef(4.5): want integer error, got %v", err)
 	}
 }

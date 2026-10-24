@@ -367,9 +367,14 @@ func (c *JenkinsClient) getBuild(ctx context.Context, jobPath string, ref string
 	return &b, nil
 }
 
+const (
+	maxBuildsPerRequest = 200
+	defaultShaScanLimit = 30
+)
+
 func (c *JenkinsClient) listBuilds(ctx context.Context, jobPath string, limit int) ([]buildSummary, error) {
 	segs := jobPathToAPISegments(jobPath)
-	rng := clamp(limit, 1, 200)
+	rng := clamp(limit, 1, maxBuildsPerRequest)
 	tree := fmt.Sprintf("builds[number,url,result,building,timestamp,duration,displayName,actions[lastBuiltRevision[SHA1,branch[name]],causes[shortDescription]]]{0,%d}", rng)
 	var res struct {
 		Builds []buildSummary `json:"builds"`
@@ -380,17 +385,37 @@ func (c *JenkinsClient) listBuilds(ctx context.Context, jobPath string, limit in
 	return res.Builds, nil
 }
 
-func (c *JenkinsClient) findBuildBySha(ctx context.Context, jobPath, sha string, scanLimit int) (*buildSummary, error) {
+func (c *JenkinsClient) findBuildBySha(ctx context.Context, jobPath, sha string, scanLimit int) (*buildSummary, int, error) {
 	builds, err := c.listBuilds(ctx, jobPath, scanLimit)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	for i := range builds {
 		if cand := extractCommit(builds[i].Actions); cand != "" && shaPrefixMatches(sha, cand) {
-			return &builds[i], nil
+			return &builds[i], i + 1, nil
 		}
 	}
-	return nil, nil
+	return nil, len(builds), nil
+}
+
+func shaScanLimit(requested int) (int, error) {
+	switch {
+	case requested == 0:
+		return defaultShaScanLimit, nil
+	case requested < 0 || requested > maxBuildsPerRequest:
+		return 0, fmt.Errorf("scanLimit must be between 1 and %d, got %d", maxBuildsPerRequest, requested)
+	}
+	return requested, nil
+}
+
+func shaNotFoundMessage(jobPath, sha string, scanned, scanLimit int) string {
+	if scanned < scanLimit {
+		return fmt.Sprintf("No build of %q matches SHA %s. Scanned all %d build(s) the job still retains (scanLimit %d), so any older build for this commit has been discarded by the job's build retention.", jobPath, sha, scanned, scanLimit)
+	}
+	if scanLimit < maxBuildsPerRequest {
+		return fmt.Sprintf("No build of %q matches SHA %s in the %d most recent build(s) scanned (scanLimit %d). The job retains more builds than that: increase scanLimit (max %d), or pass buildNumber explicitly.", jobPath, sha, scanned, scanLimit, maxBuildsPerRequest)
+	}
+	return fmt.Sprintf("No build of %q matches SHA %s in the %d most recent build(s) scanned (scanLimit %d, the maximum). The job retains more builds than that: pass buildNumber explicitly.", jobPath, sha, scanned, scanLimit)
 }
 
 func (c *JenkinsClient) getConsoleLog(ctx context.Context, jobPath string, buildNumber int, tailChars int) (string, error) {
@@ -557,16 +582,17 @@ func (c *JenkinsClient) getBuildOverview(ctx context.Context, a buildOverviewArg
 	var build *buildSummary
 	var err error
 	if a.sha != "" {
-		scan := a.scanLimit
-		if scan == 0 {
-			scan = 30
+		scan, err := shaScanLimit(a.scanLimit)
+		if err != nil {
+			return "", err
 		}
-		build, err = c.findBuildBySha(ctx, a.jobPath, a.sha, scan)
+		var scanned int
+		build, scanned, err = c.findBuildBySha(ctx, a.jobPath, a.sha, scan)
 		if err != nil {
 			return "", err
 		}
 		if build == nil {
-			return fmt.Sprintf("No build found in last %d builds of %q matching SHA %s. Try increasing scanLimit, or pass buildNumber explicitly.", scan, a.jobPath, a.sha), nil
+			return shaNotFoundMessage(a.jobPath, a.sha, scanned, scan), nil
 		}
 	} else {
 		ref := a.buildNumber

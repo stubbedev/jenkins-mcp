@@ -34,7 +34,7 @@
         },
         "scanLimit": {
           "type": "number",
-          "description": "How many recent builds to scan when sha is provided (default 30, max 200). Increase for repos with many builds per commit.",
+          "description": "How many recent builds to scan when sha is provided (default 30, 1-200; anything else is rejected). Increase for repos with many builds per commit. A miss reports how many builds were scanned and whether the job retains older ones.",
           "default": 30
         },
         "includeStages": {

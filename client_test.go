@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -295,6 +296,73 @@ func TestBuildRevisionReportsPolledAlongsideScheduled(t *testing.T) {
 	for _, s := range []string{"Scheduled 1 job(s)", "- folder » app", "Only polled", "param-job"} {
 		if !strings.Contains(out, s) {
 			t.Errorf("output missing %q:\n%s", s, out)
+		}
+	}
+}
+
+func shaScanServer(t *testing.T, retained int, requested *int) *JenkinsClient {
+	t.Helper()
+	rangeRe := regexp.MustCompile(`\{0,(\d+)\}$`)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/job/demo/api/json", func(w http.ResponseWriter, r *http.Request) {
+		m := rangeRe.FindStringSubmatch(r.URL.Query().Get("tree"))
+		if m == nil {
+			t.Errorf("tree has no build range: %s", r.URL.Query().Get("tree"))
+			return
+		}
+		n, _ := strconv.Atoi(m[1])
+		*requested = n
+		var builds []string
+		for i := range min(n, retained) {
+			builds = append(builds, fmt.Sprintf(`{"number":%d,"actions":[{"lastBuiltRevision":{"SHA1":"%s"}}]}`, retained-i, strings.Repeat("a", 40)))
+		}
+		fmt.Fprintf(w, `{"builds":[%s]}`, strings.Join(builds, ","))
+	})
+	c, srv := newTestClient(mux)
+	t.Cleanup(srv.Close)
+	return c
+}
+
+func TestGetBuildByShaReportsScanCoverage(t *testing.T) {
+	cases := []struct {
+		name          string
+		retained      int
+		scanLimit     int
+		wantRequested int
+		want          []string
+	}{
+		{"job retains fewer builds than the bound", 21, 200, 200, []string{"Scanned all 21 build(s) the job still retains (scanLimit 200)", "build retention"}},
+		{"default bound reached", 100, 0, 30, []string{"in the 30 most recent build(s) scanned (scanLimit 30)", "increase scanLimit (max 200)"}},
+		{"maximum bound reached", 300, 200, 200, []string{"in the 200 most recent build(s) scanned (scanLimit 200, the maximum)", "pass buildNumber"}},
+	}
+	for _, tc := range cases {
+		var requested int
+		c := shaScanServer(t, tc.retained, &requested)
+		out, err := c.getBuildOverview(context.Background(), buildOverviewArgs{jobPath: "demo", sha: "bbbbbbbb", scanLimit: tc.scanLimit})
+		if err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		if requested != tc.wantRequested {
+			t.Errorf("%s: requested %d builds, want %d", tc.name, requested, tc.wantRequested)
+		}
+		for _, s := range tc.want {
+			if !strings.Contains(out, s) {
+				t.Errorf("%s: output missing %q:\n%s", tc.name, s, out)
+			}
+		}
+	}
+}
+
+func TestGetBuildByShaRejectsOutOfRangeScanLimit(t *testing.T) {
+	for _, limit := range []int{-1, 201} {
+		requested := -1
+		c := shaScanServer(t, 10, &requested)
+		_, err := c.getBuildOverview(context.Background(), buildOverviewArgs{jobPath: "demo", sha: "bbbbbbbb", scanLimit: limit})
+		if err == nil || !strings.Contains(err.Error(), "scanLimit must be between 1 and 200") {
+			t.Errorf("scanLimit %d: want range error, got %v", limit, err)
+		}
+		if requested != -1 {
+			t.Errorf("scanLimit %d: Jenkins was queried despite the invalid bound", limit)
 		}
 	}
 }

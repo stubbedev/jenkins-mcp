@@ -440,7 +440,7 @@ If none of these yields a repo (e.g. stateless mode with no header, or no root m
 - Write operations (`jenkins_trigger_build`, `jenkins_build_revision`, `jenkins_stop_build`, `jenkins_update_job_config`) require the API token user to have the appropriate Jenkins permissions.
 - `jenkins_build_revision` calls the Git plugin's `notifyCommit` endpoint, which schedules a build of the given `sha1` on every job whose remote matches `url` and whose branch spec matches `branch`, and which has **Poll SCM** enabled (an empty schedule is enough). Since Git plugin 4.11 the endpoint needs its own access token: create one under **Manage Jenkins → Security → Git plugin notifyCommit access tokens** and set it as `notifyCommitToken` in the config file (or `JENKINS_NOTIFY_COMMIT_TOKEN`).
 - CSRF crumb handling is automatic — API tokens bypass the crumb check on most Jenkins installations, but the server fetches and caches a crumb for installations that require it.
-- `jenkins_get_build` with `sha` scans the last 30 builds of the job for a matching `lastBuiltRevision`. Increase `scanLimit` for repos with many builds per commit.
+- `jenkins_get_build` with `sha` scans the last 30 builds of the job for a matching `lastBuiltRevision`. Increase `scanLimit` (1-200) for repos with many builds per commit. When nothing matches, the reply says how many builds were scanned and whether that was every build the job still retains or the `scanLimit` bound.
 - Pipeline stage breakdown comes from Jenkins's `wfapi` (workflow plugin). Freestyle jobs don't expose it, and the tool falls back to summary fields only.
 - Test reports come from the standard Jenkins JUnit / xUnit plugins. Jobs that don't publish results return a friendly 404 message.
 

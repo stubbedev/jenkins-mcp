@@ -40,12 +40,8 @@ type configSource struct {
 	explicit bool
 }
 
-func loadConfig(args []string) (*Config, error) {
-	sources, err := configSources(args)
-	if err != nil {
-		return nil, err
-	}
-	cfg, err := readConfigFile(sources)
+func loadConfig(explicitPath string) (*Config, error) {
+	cfg, err := readConfigFile(configSources(explicitPath))
 	if err != nil {
 		return nil, err
 	}
@@ -78,18 +74,12 @@ func loadConfig(args []string) (*Config, error) {
 	return &cfg, nil
 }
 
-func configSources(args []string) ([]configSource, error) {
-	for i, a := range args {
-		if a != "--config" {
-			continue
-		}
-		if i+1 >= len(args) || args[i+1] == "" {
-			return nil, errors.New("--config needs a path argument")
-		}
-		return []configSource{{path: args[i+1], explicit: true}}, nil
+func configSources(explicitPath string) []configSource {
+	if explicitPath != "" {
+		return []configSource{{path: explicitPath, explicit: true}}
 	}
 	if env := os.Getenv("JENKINS_MCP_CONFIG"); env != "" {
-		return []configSource{{path: env, explicit: true}}, nil
+		return []configSource{{path: env, explicit: true}}
 	}
 	var out []configSource
 	if home, err := os.UserHomeDir(); err == nil {
@@ -98,7 +88,7 @@ func configSources(args []string) ([]configSource, error) {
 	if xdg := xdgConfigPath(); xdg != "" {
 		out = append(out, configSource{path: xdg})
 	}
-	return append(out, configSource{path: ".jenkins-mcp.json"}), nil
+	return append(out, configSource{path: ".jenkins-mcp.json"})
 }
 
 // xdgConfigPath returns the XDG config file location for jenkins-mcp, honoring

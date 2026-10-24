@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -50,9 +51,24 @@ func TestResolveTransport(t *testing.T) {
 			wantPath: "/mcp",
 		},
 		{
-			name:     "flag does not eat following flag",
-			args:     []string{"--http", "--version"},
-			wantHTTP: true,
+			name:          "flag does not eat following flag",
+			args:          []string{"--http", "--http-stateless"},
+			wantHTTP:      true,
+			wantAddr:      "127.0.0.1:8080",
+			wantPath:      "/mcp",
+			wantStateless: true,
+		},
+		{
+			name:     "env false keeps stdio",
+			env:      map[string]string{"JENKINS_MCP_HTTP": "false"},
+			wantHTTP: false,
+			wantAddr: "127.0.0.1:8080",
+			wantPath: "/mcp",
+		},
+		{
+			name:     "env 0 keeps stdio",
+			env:      map[string]string{"JENKINS_MCP_HTTP": "0"},
+			wantHTTP: false,
 			wantAddr: "127.0.0.1:8080",
 			wantPath: "/mcp",
 		},
@@ -118,7 +134,14 @@ func TestResolveTransport(t *testing.T) {
 			for k, v := range tc.env {
 				t.Setenv(k, v)
 			}
-			got := resolveTransport(tc.args)
+			cli, err := parseCLI(tc.args)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := resolveTransport(cli)
+			if err != nil {
+				t.Fatal(err)
+			}
 			if got.http != tc.wantHTTP || got.addr != tc.wantAddr || got.path != tc.wantPath || got.stateless != tc.wantStateless {
 				t.Errorf("resolveTransport(%v) = %+v, want http=%v addr=%q path=%q stateless=%v",
 					tc.args, got, tc.wantHTTP, tc.wantAddr, tc.wantPath, tc.wantStateless)
@@ -200,5 +223,63 @@ func TestSafeGitUsesContextCwd(t *testing.T) {
 	// macOS /tmp symlinks to /private/tmp, so compare suffixes loosely.
 	if resolved, err := os.Stat(got); err != nil || resolved == nil {
 		t.Errorf("toplevel %q does not exist: %v", got, err)
+	}
+}
+
+func TestResolveTransportRejectsInvalidSettings(t *testing.T) {
+	cases := []struct {
+		name string
+		env  map[string]string
+		args []string
+		want string
+	}{
+		{"stateless typo", map[string]string{"JENKINS_MCP_HTTP": "1", "JENKINS_MCP_HTTP_STATELESS": "yes"}, nil, `JENKINS_MCP_HTTP_STATELESS must be true, false, 1 or 0, got "yes"`},
+		{"relative path", map[string]string{"JENKINS_MCP_HTTP": "1", "JENKINS_MCP_HTTP_PATH": "mcp"}, nil, `JENKINS_MCP_HTTP_PATH must start with "/", got "mcp"`},
+		{"env address without port", map[string]string{"JENKINS_MCP_HTTP": "localhost"}, nil, `invalid HTTP listen address "localhost"`},
+		{"flag port out of range", nil, []string{"--http=:70000"}, `invalid HTTP listen address ":70000"`},
+		{"stateless without http", nil, []string{"--http-stateless"}, "needs HTTP mode"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, k := range []string{"JENKINS_MCP_HTTP", "JENKINS_MCP_HTTP_PATH", "JENKINS_MCP_HTTP_STATELESS"} {
+				t.Setenv(k, "")
+				os.Unsetenv(k)
+			}
+			for k, v := range tc.env {
+				t.Setenv(k, v)
+			}
+			cli, err := parseCLI(tc.args)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := resolveTransport(cli); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("want error containing %q, got %v", tc.want, err)
+			}
+		})
+	}
+}
+
+func TestParseCLI(t *testing.T) {
+	got, err := parseCLI([]string{"--config", "/c.json", "--http", "0.0.0.0:9", "--http-stateless"})
+	want := cliOptions{configPath: "/c.json", http: true, httpAddr: "0.0.0.0:9", httpStateless: true}
+	if err != nil || got != want {
+		t.Errorf("parseCLI = %+v, %v; want %+v", got, err, want)
+	}
+	if got, err := parseCLI([]string{"--config=/d.json", "-v"}); err != nil || got != (cliOptions{configPath: "/d.json", version: true}) {
+		t.Errorf("parseCLI inline = %+v, %v", got, err)
+	}
+	for args, wantErr := range map[string]string{
+		"--confg x":             `unknown argument "--confg"`,
+		"stray":                 `unknown argument "stray"`,
+		"--config":              "--config needs a value",
+		"--config --http":       "--config needs a value",
+		"--config=":             "--config needs a value",
+		"--http=":               "--http= needs an address",
+		"--config a --config b": "--config given more than once",
+		"--http-stateless=yes":  "--http-stateless takes no value",
+	} {
+		if _, err := parseCLI(strings.Fields(args)); err == nil || !strings.Contains(err.Error(), wantErr) {
+			t.Errorf("parseCLI(%q): want error containing %q, got %v", args, wantErr, err)
+		}
 	}
 }

@@ -83,7 +83,7 @@ const validConfig = `{"$schema": "x", "url": "https://j", "username": "u", "toke
 
 func TestLoadConfigSources(t *testing.T) {
 	dir := isolateConfigEnv(t)
-	cfg, err := loadConfig(nil)
+	cfg, err := loadConfig("")
 	if err != nil || cfg != nil {
 		t.Fatalf("no config anywhere: got %+v, %v; want disabled without error", cfg, err)
 	}
@@ -91,21 +91,21 @@ func TestLoadConfigSources(t *testing.T) {
 	t.Setenv("JENKINS_URL", "https://env")
 	t.Setenv("JENKINS_USERNAME", "eu")
 	t.Setenv("JENKINS_TOKEN", "et")
-	if cfg, err = loadConfig(nil); err != nil || cfg == nil || cfg.URL != "https://env" {
+	if cfg, err = loadConfig(""); err != nil || cfg == nil || cfg.URL != "https://env" {
 		t.Fatalf("env only: got %+v, %v", cfg, err)
 	}
 
 	writeConfig(t, filepath.Join(dir, "xdg", "jenkins-mcp", "config.json"), validConfig)
-	if cfg, err = loadConfig(nil); err != nil || cfg.URL != "https://j" || cfg.RepoJobMap["org/repo"][0] != "folder/job" {
+	if cfg, err = loadConfig(""); err != nil || cfg.URL != "https://j" || cfg.RepoJobMap["org/repo"][0] != "folder/job" {
 		t.Fatalf("xdg default: got %+v, %v", cfg, err)
 	}
 
 	explicit := writeConfig(t, filepath.Join(dir, "explicit.json"), `{"url": "https://explicit", "username": "x", "token": "y"}`)
-	if cfg, err = loadConfig([]string{"--config", explicit}); err != nil || cfg.URL != "https://explicit" {
+	if cfg, err = loadConfig(explicit); err != nil || cfg.URL != "https://explicit" {
 		t.Fatalf("--config: got %+v, %v", cfg, err)
 	}
 	t.Setenv("JENKINS_MCP_CONFIG", explicit)
-	if cfg, err = loadConfig(nil); err != nil || cfg.URL != "https://explicit" {
+	if cfg, err = loadConfig(""); err != nil || cfg.URL != "https://explicit" {
 		t.Fatalf("JENKINS_MCP_CONFIG: got %+v, %v", cfg, err)
 	}
 }
@@ -113,38 +113,35 @@ func TestLoadConfigSources(t *testing.T) {
 func TestLoadConfigFailsLoudly(t *testing.T) {
 	cases := []struct {
 		name  string
-		setup func(t *testing.T, dir string) []string
+		setup func(t *testing.T, dir string) string
 		want  []string
 	}{
-		{"missing JENKINS_MCP_CONFIG file", func(t *testing.T, dir string) []string {
+		{"missing JENKINS_MCP_CONFIG file", func(t *testing.T, dir string) string {
 			t.Setenv("JENKINS_MCP_CONFIG", filepath.Join(dir, "nope.json"))
-			return nil
+			return ""
 		}, []string{"reading config file", "nope.json", "no such file"}},
-		{"missing --config file", func(t *testing.T, dir string) []string {
-			return []string{"--config", filepath.Join(dir, "gone.json")}
+		{"missing --config file", func(t *testing.T, dir string) string {
+			return filepath.Join(dir, "gone.json")
 		}, []string{"reading config file", "gone.json"}},
-		{"--config without a path", func(t *testing.T, dir string) []string {
-			return []string{"--config"}
-		}, []string{"--config needs a path"}},
-		{"malformed default file", func(t *testing.T, dir string) []string {
+		{"malformed default file", func(t *testing.T, dir string) string {
 			writeConfig(t, filepath.Join(dir, ".jenkins-mcp.json"), `{"url": `)
-			return nil
+			return ""
 		}, []string{"parsing config file", ".jenkins-mcp.json"}},
-		{"unknown key", func(t *testing.T, dir string) []string {
+		{"unknown key", func(t *testing.T, dir string) string {
 			writeConfig(t, filepath.Join(dir, "xdg", "jenkins-mcp", "config.json"), `{"url": "u", "tokn": "t"}`)
-			return nil
+			return ""
 		}, []string{"parsing config file", "config.json", `unknown field "tokn"`}},
-		{"trailing data", func(t *testing.T, dir string) []string {
-			return []string{"--config", writeConfig(t, filepath.Join(dir, "c.json"), validConfig+` {}`)}
+		{"trailing data", func(t *testing.T, dir string) string {
+			return writeConfig(t, filepath.Join(dir, "c.json"), validConfig+` {}`)
 		}, []string{"c.json", "unexpected data"}},
-		{"bad repoJobMap value", func(t *testing.T, dir string) []string {
-			return []string{"--config", writeConfig(t, filepath.Join(dir, "c.json"), `{"repoJobMap": {"org/repo": 42}}`)}
+		{"bad repoJobMap value", func(t *testing.T, dir string) string {
+			return writeConfig(t, filepath.Join(dir, "c.json"), `{"repoJobMap": {"org/repo": 42}}`)
 		}, []string{"c.json", `repoJobMap["org/repo"]`, "42"}},
-		{"default path is a directory", func(t *testing.T, dir string) []string {
+		{"default path is a directory", func(t *testing.T, dir string) string {
 			if err := os.Mkdir(filepath.Join(dir, ".jenkins-mcp.json"), 0o755); err != nil {
 				t.Fatal(err)
 			}
-			return nil
+			return ""
 		}, []string{"reading config file", ".jenkins-mcp.json"}},
 	}
 	for _, tc := range cases {
@@ -177,7 +174,7 @@ JENKINS_URL=https://dotenv
 JENKINS_USERNAME=du
 JENKINS_TOKEN=dt
 `)
-	got, err := loadStartupSettings(nil)
+	got, err := loadStartupSettings(cliOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}

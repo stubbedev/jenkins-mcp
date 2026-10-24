@@ -3,9 +3,12 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -32,51 +35,67 @@ type transportConfig struct {
 	stateless bool
 }
 
-// resolveTransport decides between stdio (default) and Streamable HTTP based on
-// CLI flags and environment, matching this precedence:
-//
-//	--http[=addr] / --http addr  → HTTP on addr (or the env/default addr)
-//	JENKINS_MCP_HTTP=addr        → HTTP on addr ("1"/"true" means default addr)
-//	(otherwise)                  → stdio
-//
-// The endpoint path comes from JENKINS_MCP_HTTP_PATH (default "/mcp").
-func resolveTransport(args []string) transportConfig {
-	tc := transportConfig{
-		addr: "127.0.0.1:8080",
-		path: "/mcp",
-	}
-	if p := os.Getenv("JENKINS_MCP_HTTP_PATH"); p != "" {
+const (
+	defaultHTTPAddr = "127.0.0.1:8080"
+	defaultHTTPPath = "/mcp"
+)
+
+func resolveTransport(cli cliOptions) (transportConfig, error) {
+	tc := transportConfig{addr: defaultHTTPAddr, path: defaultHTTPPath}
+	if p, set := os.LookupEnv("JENKINS_MCP_HTTP_PATH"); set {
+		if !strings.HasPrefix(p, "/") {
+			return transportConfig{}, fmt.Errorf("JENKINS_MCP_HTTP_PATH must start with \"/\", got %q", p)
+		}
 		tc.path = p
 	}
-
-	if env := os.Getenv("JENKINS_MCP_HTTP"); env != "" {
-		tc.http = true
-		if env != "1" && strings.ToLower(env) != "true" {
+	if env, set := os.LookupEnv("JENKINS_MCP_HTTP"); set && env != "" {
+		switch strings.ToLower(env) {
+		case "1", "true":
+			tc.http = true
+		case "0", "false":
+		default:
+			tc.http = true
 			tc.addr = env
 		}
 	}
-	if env := strings.ToLower(os.Getenv("JENKINS_MCP_HTTP_STATELESS")); env == "1" || env == "true" {
-		tc.stateless = true
-	}
-
-	for i := 0; i < len(args); i++ {
-		a := args[i]
-		switch {
-		case a == "--http":
-			tc.http = true
-			// Consume a following bare addr (not another flag), if present.
-			if i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
-				tc.addr = args[i+1]
-				i++
-			}
-		case strings.HasPrefix(a, "--http="):
-			tc.http = true
-			tc.addr = strings.TrimPrefix(a, "--http=")
-		case a == "--http-stateless":
+	if env, set := os.LookupEnv("JENKINS_MCP_HTTP_STATELESS"); set && env != "" {
+		switch strings.ToLower(env) {
+		case "1", "true":
 			tc.stateless = true
+		case "0", "false":
+		default:
+			return transportConfig{}, fmt.Errorf("JENKINS_MCP_HTTP_STATELESS must be true, false, 1 or 0, got %q", env)
 		}
 	}
-	return tc
+	if cli.http {
+		tc.http = true
+		if cli.httpAddr != "" {
+			tc.addr = cli.httpAddr
+		}
+	}
+	if cli.httpStateless {
+		tc.stateless = true
+	}
+	if tc.stateless && !tc.http {
+		return transportConfig{}, errors.New("--http-stateless / JENKINS_MCP_HTTP_STATELESS needs HTTP mode (--http or JENKINS_MCP_HTTP)")
+	}
+	if tc.http {
+		if err := validateListenAddr(tc.addr); err != nil {
+			return transportConfig{}, err
+		}
+	}
+	return tc, nil
+}
+
+func validateListenAddr(addr string) error {
+	_, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return fmt.Errorf("invalid HTTP listen address %q: %w", addr, err)
+	}
+	if n, err := strconv.Atoi(port); err != nil || n < 0 || n > 65535 {
+		return fmt.Errorf("invalid HTTP listen address %q: port must be a number from 0 to 65535", addr)
+	}
+	return nil
 }
 
 // serveHTTP runs the MCP server over Streamable HTTP. It is stateful by default

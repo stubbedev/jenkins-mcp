@@ -19,14 +19,17 @@ import (
 var jenkins *JenkinsClient
 
 func main() {
-	for _, a := range os.Args[1:] {
-		if a == "--version" || a == "-v" {
-			fmt.Println("jenkins-mcp " + Version)
-			return
-		}
+	cli, err := parseCLI(os.Args[1:])
+	if err != nil {
+		logErr("[jenkins-mcp] " + err.Error())
+		os.Exit(2)
+	}
+	if cli.version {
+		fmt.Println("jenkins-mcp " + Version)
+		return
 	}
 
-	settings, err := loadStartupSettings(os.Args[1:])
+	settings, err := loadStartupSettings(cli)
 	if err != nil {
 		logErr("[jenkins-mcp] " + err.Error())
 		os.Exit(1)
@@ -66,7 +69,7 @@ type startupSettings struct {
 	config    *Config
 }
 
-func loadStartupSettings(args []string) (startupSettings, error) {
+func loadStartupSettings(cli cliOptions) (startupSettings, error) {
 	if err := loadDotEnv(dotEnvFile); err != nil {
 		return startupSettings{}, err
 	}
@@ -78,8 +81,12 @@ func loadStartupSettings(args []string) (startupSettings, error) {
 		}
 		settings.format = f
 	}
-	settings.transport = resolveTransport(args)
-	config, err := loadConfig(args)
+	transport, err := resolveTransport(cli)
+	if err != nil {
+		return startupSettings{}, err
+	}
+	settings.transport = transport
+	config, err := loadConfig(cli.configPath)
 	if err != nil {
 		return startupSettings{}, err
 	}

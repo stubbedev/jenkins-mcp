@@ -304,3 +304,99 @@ func TestMergeRejectsInvalidTriggers(t *testing.T) {
 		}
 	}
 }
+
+func pipelineWithTriggerProperty(triggers string) string {
+	return `<?xml version='1.1' encoding='UTF-8'?>
+<flow-definition plugin="workflow-job@1400">
+  <properties>
+    <org.jenkinsci.plugins.workflow.job.properties.PipelineTriggersJobProperty>
+      <triggers>` + triggers + `</triggers>
+    </org.jenkinsci.plugins.workflow.job.properties.PipelineTriggersJobProperty>
+  </properties>
+  <definition class="org.jenkinsci.plugins.workflow.cps.CpsScmFlowDefinition">
+    ` + fmt.Sprintf(gitSCMXML, "**", "") + `
+    <scriptPath>Jenkinsfile</scriptPath>
+  </definition>
+  <disabled>false</disabled>
+</flow-definition>`
+}
+
+func triggerLocations(t *testing.T, xml string) (root, property int) {
+	t.Helper()
+	doc, _, err := newConfigDoc(xml)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if trig := doc.Root().SelectElement("triggers"); trig != nil {
+		root = len(trig.ChildElements())
+	}
+	if trig := pipelineTriggersContainer(doc.Root()); trig != nil {
+		property = len(trig.ChildElements())
+	}
+	return root, property
+}
+
+func TestPipelineTriggersLiveInJobProperty(t *testing.T) {
+	xml := pipelineWithTriggerProperty(`<hudson.triggers.TimerTrigger><spec>H 3 * * *</spec></hudson.triggers.TimerTrigger>` + pollTrigger)
+	cfg, err := parseJobConfig(xml)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []Trigger{{Type: triggerCron, Spec: "H 3 * * *"}, {Type: triggerSCMPoll}}
+	if !reflect.DeepEqual(cfg.Triggers, want) {
+		t.Fatalf("triggers = %+v, want %+v", cfg.Triggers, want)
+	}
+
+	patch := &JobConfig{Triggers: []Trigger{{Type: triggerSCMPoll}}}
+	out, err := mergeJobConfig(xml, patch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if root, prop := triggerLocations(t, out); root != 0 || prop != 1 {
+		t.Errorf("after patch: %d root trigger(s), %d in PipelineTriggersJobProperty; want 0 and 1:\n%s", root, prop, out)
+	}
+	back, err := parseJobConfig(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(back.Triggers, patch.Triggers) || back.BuildRevision.Mode != buildRevisionPinsCommit {
+		t.Errorf("round-trip: triggers %+v, buildRevision %+v", back.Triggers, back.BuildRevision)
+	}
+}
+
+func TestLegacyPipelineRootTriggersMoveToJobProperty(t *testing.T) {
+	cfg, err := parseJobConfig(scmPipelineXML)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := mergeJobConfig(scmPipelineXML, &JobConfig{Triggers: cfg.Triggers})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if root, prop := triggerLocations(t, out); root != 0 || prop != 1 {
+		t.Errorf("after patch: %d root trigger(s), %d in PipelineTriggersJobProperty; want 0 and 1:\n%s", root, prop, out)
+	}
+}
+
+func TestFreestyleTriggersStayAtRoot(t *testing.T) {
+	xml := freestyleXML(fmt.Sprintf(gitSCMXML, "**", ""), "", false)
+	out, err := mergeJobConfig(xml, &JobConfig{Triggers: []Trigger{{Type: triggerSCMPoll}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if root, prop := triggerLocations(t, out); root != 1 || prop != 0 || strings.Contains(out, tagPipelineTriggersProp) {
+		t.Errorf("freestyle patch: %d root trigger(s), %d in a pipeline property; want 1 and 0:\n%s", root, prop, out)
+	}
+
+	misplaced := strings.Replace(xml, "<project>", `<project>
+  <properties>
+    <org.jenkinsci.plugins.workflow.job.properties.PipelineTriggersJobProperty><triggers>`+pollTrigger+`</triggers></org.jenkinsci.plugins.workflow.job.properties.PipelineTriggersJobProperty>
+  </properties>`, 1)
+	cfg, err := parseJobConfig(misplaced)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Triggers) != 0 || cfg.BuildRevision.Mode != buildRevisionNotTriggered {
+		t.Errorf("freestyle must ignore a pipeline trigger property: triggers %+v, buildRevision %+v", cfg.Triggers, cfg.BuildRevision)
+	}
+}

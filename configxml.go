@@ -225,7 +225,7 @@ func parseJobConfig(xml string) (*JobConfigView, error) {
 		}
 	}
 
-	if trig := root.SelectElement("triggers"); trig != nil {
+	for _, trig := range triggerContainers(root) {
 		for _, t := range trig.ChildElements() {
 			switch t.Tag {
 			case tagTimerTrigger:
@@ -344,17 +344,59 @@ func redactRemoteURL(raw string) string {
 	return raw
 }
 
-func scmTriggers(root *etree.Element) []*etree.Element {
+func pipelineTriggersContainer(root *etree.Element) *etree.Element {
+	props := root.SelectElement("properties")
+	if props == nil {
+		return nil
+	}
+	prop := props.SelectElement(tagPipelineTriggersProp)
+	if prop == nil {
+		return nil
+	}
+	return prop.SelectElement("triggers")
+}
+
+func triggerContainers(root *etree.Element) []*etree.Element {
 	var out []*etree.Element
 	if trig := root.SelectElement("triggers"); trig != nil {
-		out = append(out, trig.SelectElements(tagSCMTrigger)...)
+		out = append(out, trig)
 	}
-	if props := root.SelectElement("properties"); props != nil {
-		if prop := props.SelectElement(tagPipelineTriggersProp); prop != nil {
-			if trig := prop.SelectElement("triggers"); trig != nil {
-				out = append(out, trig.SelectElements(tagSCMTrigger)...)
-			}
+	if jobTypeFromTag(root.Tag) != "pipeline" {
+		return out
+	}
+	if trig := pipelineTriggersContainer(root); trig != nil {
+		out = append(out, trig)
+	}
+	return out
+}
+
+func writableTriggerContainer(root *etree.Element) *etree.Element {
+	if jobTypeFromTag(root.Tag) != "pipeline" {
+		trig := root.SelectElement("triggers")
+		if trig == nil {
+			trig = root.CreateElement("triggers")
 		}
+		return trig
+	}
+	removeChild(root, "triggers")
+	if trig := pipelineTriggersContainer(root); trig != nil {
+		return trig
+	}
+	props := root.SelectElement("properties")
+	if props == nil {
+		props = root.CreateElement("properties")
+	}
+	prop := props.SelectElement(tagPipelineTriggersProp)
+	if prop == nil {
+		prop = props.CreateElement(tagPipelineTriggersProp)
+	}
+	return prop.CreateElement("triggers")
+}
+
+func scmTriggers(root *etree.Element) []*etree.Element {
+	var out []*etree.Element
+	for _, trig := range triggerContainers(root) {
+		out = append(out, trig.SelectElements(tagSCMTrigger)...)
 	}
 	return out
 }
@@ -503,8 +545,10 @@ func mergeJobConfig(xml string, patch *JobConfig) (string, error) {
 				return "", err
 			}
 		}
-		removeChild(root, "triggers")
-		trig := root.CreateElement("triggers")
+		trig := writableTriggerContainer(root)
+		for _, c := range trig.ChildElements() {
+			trig.RemoveChild(c)
+		}
 		for _, t := range patch.Triggers {
 			switch t.Type {
 			case triggerCron:

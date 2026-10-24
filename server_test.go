@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -147,5 +148,59 @@ func TestCallToolBuildRevision(t *testing.T) {
 	}
 	if !strings.Contains(resultText(res), "- Kontainer") {
 		t.Errorf("got %q, want the scheduled job listed", resultText(res))
+	}
+}
+
+func TestBuildInstructionsMakesNoJenkinsRequest(t *testing.T) {
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		_, _ = w.Write([]byte(`{"id":"alice"}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	cfg := Config{URL: srv.URL, Username: "alice", Token: "t"}
+	saved := jenkins
+	jenkins = NewJenkinsClient(cfg)
+	t.Cleanup(func() { jenkins = saved })
+
+	for _, httpMode := range []bool{true, false} {
+		out := buildInstructions(&cfg, httpMode)
+		if !strings.Contains(out, srv.URL+" — authenticating as alice") {
+			t.Errorf("httpMode=%v: instructions missing the configured identity:\n%s", httpMode, out)
+		}
+	}
+	if n := hits.Load(); n != 0 {
+		t.Errorf("buildInstructions made %d request(s) to Jenkins; startup must not touch the network", n)
+	}
+}
+
+func TestCheckConnection(t *testing.T) {
+	cases := []struct {
+		name    string
+		status  int
+		body    string
+		wantErr string
+	}{
+		{"ok", http.StatusOK, `{"id":"alice"}`, ""},
+		{"bad credentials", http.StatusUnauthorized, "nope", "Authentication failed"},
+		{"no user id", http.StatusOK, `{}`, "returned no user id"},
+	}
+	for _, tc := range cases {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/me/api/json" {
+				t.Errorf("%s: unexpected path %s", tc.name, r.URL.Path)
+			}
+			w.WriteHeader(tc.status)
+			_, _ = w.Write([]byte(tc.body))
+		}))
+		err := NewJenkinsClient(Config{URL: srv.URL, Username: "alice", Token: "t"}).checkConnection(context.Background())
+		srv.Close()
+		switch {
+		case tc.wantErr == "" && err != nil:
+			t.Errorf("%s: unexpected error %v", tc.name, err)
+		case tc.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tc.wantErr) || !strings.Contains(err.Error(), "checking the Jenkins connection to "+srv.URL)):
+			t.Errorf("%s: want error containing %q and the Jenkins URL, got %v", tc.name, tc.wantErr, err)
+		}
 	}
 }

@@ -197,7 +197,6 @@ type JenkinsClient struct {
 	http              *http.Client
 
 	mu         sync.Mutex // guards the caches below (worker pool runs handlers concurrently)
-	userCache  *struct{ id, fullName string }
 	crumbCache *crumb
 	crumbTried bool
 }
@@ -261,26 +260,19 @@ func (c *JenkinsClient) requestRaw(ctx context.Context, method, path, accept str
 	return body, nil
 }
 
-func (c *JenkinsClient) whoami(ctx context.Context) (id, fullName string) {
-	c.mu.Lock()
-	cached := c.userCache
-	c.mu.Unlock()
-	if cached != nil {
-		return cached.id, cached.fullName
-	}
+const connectionCheckTimeout = 5 * time.Second
+
+func (c *JenkinsClient) checkConnection(ctx context.Context) error {
 	var me struct {
-		ID       string `json:"id"`
-		FullName string `json:"fullName"`
+		ID string `json:"id"`
 	}
-	// Short timeout: whoami only feeds the startup instructions banner, so an
-	// unreachable Jenkins must not stall server boot for the full 30s.
-	if err := c.requestJSON(ctx, "/me/api/json", &me, 5*time.Second); err != nil {
-		return "", ""
+	if err := c.requestJSON(ctx, "/me/api/json", &me, connectionCheckTimeout); err != nil {
+		return fmt.Errorf("checking the Jenkins connection to %s: %w", c.baseURL, err)
 	}
-	c.mu.Lock()
-	c.userCache = &struct{ id, fullName string }{me.ID, me.FullName}
-	c.mu.Unlock()
-	return me.ID, me.FullName
+	if me.ID == "" {
+		return fmt.Errorf("checking the Jenkins connection to %s: /me/api/json returned no user id", c.baseURL)
+	}
+	return nil
 }
 
 func (c *JenkinsClient) fetchCrumb(ctx context.Context) *crumb {

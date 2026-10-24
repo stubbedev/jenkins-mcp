@@ -33,6 +33,7 @@ func main() {
 	config := loadConfig()
 	if config != nil {
 		jenkins = NewJenkinsClient(*config)
+		go reportConnection(jenkins)
 	}
 
 	s := newServer(buildInstructions(config, tc.http))
@@ -547,9 +548,12 @@ func parsePatch(raw any) (*JobConfig, error) {
 	return &patch, nil
 }
 
-// buildInstructions renders the server instructions string surfaced to clients,
-// mirroring the TS buildInstructions (without the live whoami round-trip, which
-// the client makes lazily anyway).
+func reportConnection(c *JenkinsClient) {
+	if err := c.checkConnection(context.Background()); err != nil {
+		logErr("[jenkins-mcp] " + err.Error())
+	}
+}
+
 func buildInstructions(config *Config, httpMode bool) string {
 	var l lines
 	l.add("# jenkins-mcp")
@@ -564,15 +568,7 @@ func buildInstructions(config *Config, httpMode bool) string {
 	}
 
 	l.add("## Configured")
-	id, fullName := jenkins.whoami(context.Background())
-	who := ""
-	if id != "" {
-		who = " — you are " + id
-		if fullName != "" {
-			who += fmt.Sprintf(" %q", fullName)
-		}
-	}
-	l.add("- Jenkins: %s%s", config.URL, who)
+	l.add("- Jenkins: %s — authenticating as %s", config.URL, config.Username)
 
 	if httpMode {
 		l.blank()

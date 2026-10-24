@@ -985,10 +985,7 @@ func (c *JenkinsClient) getJobConfigTool(ctx context.Context, jobPath string, fo
 	return renderStructured(cfg, format)
 }
 
-func (c *JenkinsClient) updateJobConfigTool(ctx context.Context, jobPath string, patch *JobConfig, format outputFormat) (string, error) {
-	if patch == nil || patch.isEmpty() {
-		return "", errors.New("patch is required and must contain at least one field to update.")
-	}
+func (c *JenkinsClient) updateJobConfigTool(ctx context.Context, jobPath string, patch jobPatch, format outputFormat) (string, error) {
 	segs := jobPathToAPISegments(jobPath)
 	body, err := c.requestRaw(ctx, "GET", fmt.Sprintf("/%s/config.xml", segs), "application/xml", 0)
 	if err != nil {
@@ -1075,11 +1072,6 @@ func (c *JenkinsClient) getTestsTool(ctx context.Context, jobPath string, buildN
 		}
 	}
 	return l.String(), nil
-}
-
-func (cfg *JobConfig) isEmpty() bool {
-	return cfg.Description == nil && cfg.Disabled == nil && cfg.ConcurrentBuilds == nil &&
-		cfg.Definition == nil && cfg.Triggers == nil && cfg.Parameters == nil && cfg.BuildRetention == nil
 }
 
 func (b *buildSummary) changeItems() []changeSetItem {

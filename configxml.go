@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"net/url"
 	"regexp"
@@ -42,7 +43,6 @@ func newConfigDoc(xml string) (*etree.Document, string, error) {
 // tools expose. Reads project a subset of the XML; writes are merged back into
 // the original document so unknown elements are preserved.
 type JobConfig struct {
-	Type             string          `json:"type"`
 	Description      *string         `json:"description,omitempty"`
 	Disabled         *bool           `json:"disabled,omitempty"`
 	ConcurrentBuilds *bool           `json:"concurrentBuilds,omitempty"`
@@ -53,6 +53,7 @@ type JobConfig struct {
 }
 
 type JobConfigView struct {
+	Type string `json:"type"`
 	JobConfig
 	OtherTriggers []string             `json:"otherTriggers,omitempty"`
 	SCM           []SCMConfig          `json:"scm,omitempty"`
@@ -91,11 +92,38 @@ type BuildRevisionSupport struct {
 	Reason string            `json:"reason"`
 }
 
+type DefinitionType string
+
+const (
+	definitionInline DefinitionType = "inline"
+	definitionSCM    DefinitionType = "scm"
+)
+
+const (
+	classCpsFlowDefinition    = "org.jenkinsci.plugins.workflow.cps.CpsFlowDefinition"
+	classCpsScmFlowDefinition = "org.jenkinsci.plugins.workflow.cps.CpsScmFlowDefinition"
+)
+
 type PipelineDef struct {
-	Type        string `json:"type"` // "inline" | "scm"
-	Script      string `json:"script,omitempty"`
-	ScriptPath  string `json:"scriptPath,omitempty"`
-	Lightweight *bool  `json:"lightweight,omitempty"`
+	Type        DefinitionType `json:"type,omitempty"`
+	Script      *string        `json:"script,omitempty"`
+	Sandbox     *bool          `json:"sandbox,omitempty"`
+	ScriptPath  *string        `json:"scriptPath,omitempty"`
+	Lightweight *bool          `json:"lightweight,omitempty"`
+}
+
+func definitionTypeOf(defn *etree.Element) (DefinitionType, string) {
+	if defn == nil {
+		return "", ""
+	}
+	switch class := defn.SelectAttrValue("class", ""); class {
+	case classCpsFlowDefinition:
+		return definitionInline, class
+	case classCpsScmFlowDefinition:
+		return definitionSCM, class
+	default:
+		return "", class
+	}
 }
 
 type TriggerType string
@@ -125,12 +153,22 @@ func (t Trigger) validate() error {
 	}
 }
 
+type ParameterType string
+
+const (
+	paramString   ParameterType = "string"
+	paramBoolean  ParameterType = "boolean"
+	paramText     ParameterType = "text"
+	paramChoice   ParameterType = "choice"
+	paramPassword ParameterType = "password"
+)
+
 type Parameter struct {
-	Type        string   `json:"type"` // string|boolean|text|choice|password
-	Name        string   `json:"name"`
-	Default     *string  `json:"default,omitempty"`
-	Description string   `json:"description,omitempty"`
-	Choices     []string `json:"choices,omitempty"`
+	Type        ParameterType `json:"type"`
+	Name        string        `json:"name"`
+	Default     *string       `json:"default,omitempty"`
+	Description string        `json:"description,omitempty"`
+	Choices     []string      `json:"choices,omitempty"`
 }
 
 type BuildRetention struct {
@@ -153,18 +191,16 @@ const (
 	scmTypeGit               = "git"
 )
 
-// paramClass maps the public parameter type onto its Jenkins XML element name.
-var paramClass = map[string]string{
-	"string":   "hudson.model.StringParameterDefinition",
-	"boolean":  "hudson.model.BooleanParameterDefinition",
-	"text":     "hudson.model.TextParameterDefinition",
-	"choice":   "hudson.model.ChoiceParameterDefinition",
-	"password": "hudson.model.PasswordParameterDefinition",
+var paramClass = map[ParameterType]string{
+	paramString:   "hudson.model.StringParameterDefinition",
+	paramBoolean:  "hudson.model.BooleanParameterDefinition",
+	paramText:     "hudson.model.TextParameterDefinition",
+	paramChoice:   "hudson.model.ChoiceParameterDefinition",
+	paramPassword: "hudson.model.PasswordParameterDefinition",
 }
 
-// classToParamType is the reverse of paramClass.
-var classToParamType = func() map[string]string {
-	m := make(map[string]string, len(paramClass))
+var classToParamType = func() map[string]ParameterType {
+	m := make(map[string]ParameterType, len(paramClass))
 	for k, v := range paramClass {
 		m[v] = k
 	}
@@ -194,7 +230,7 @@ func parseJobConfig(xml string) (*JobConfigView, error) {
 	if root == nil {
 		return nil, errEmptyConfig
 	}
-	cfg := &JobConfigView{JobConfig: JobConfig{Type: jobTypeFromTag(root.Tag)}}
+	cfg := &JobConfigView{Type: jobTypeFromTag(root.Tag)}
 
 	if d := childText(root, "description"); d != "" {
 		cfg.Description = &d
@@ -207,22 +243,25 @@ func parseJobConfig(xml string) (*JobConfigView, error) {
 	}
 
 	if cfg.Type == "pipeline" {
-		if defn := root.SelectElement("definition"); defn != nil {
-			class := defn.SelectAttrValue("class", "")
-			switch {
-			case strings.Contains(class, "CpsFlowDefinition"):
-				cfg.Definition = &PipelineDef{Type: "inline", Script: childText(defn, "script")}
-			case strings.Contains(class, "CpsScmFlowDefinition"):
-				lightweight := true
-				if b, ok := childBool(defn, "lightweight"); ok {
-					lightweight = b
-				}
-				scriptPath := childText(defn, "scriptPath")
-				if scriptPath == "" {
-					scriptPath = "Jenkinsfile"
-				}
-				cfg.Definition = &PipelineDef{Type: "scm", ScriptPath: scriptPath, Lightweight: &lightweight}
+		defn := root.SelectElement("definition")
+		switch kind, _ := definitionTypeOf(defn); kind {
+		case definitionInline:
+			script := childText(defn, "script")
+			def := &PipelineDef{Type: definitionInline, Script: &script}
+			if b, ok := childBool(defn, "sandbox"); ok {
+				def.Sandbox = &b
 			}
+			cfg.Definition = def
+		case definitionSCM:
+			lightweight := true
+			if b, ok := childBool(defn, "lightweight"); ok {
+				lightweight = b
+			}
+			scriptPath := childText(defn, "scriptPath")
+			if scriptPath == "" {
+				scriptPath = "Jenkinsfile"
+			}
+			cfg.Definition = &PipelineDef{Type: definitionSCM, ScriptPath: &scriptPath, Lightweight: &lightweight}
 		}
 	}
 
@@ -488,7 +527,7 @@ func parseParameters(root *etree.Element) []Parameter {
 			if desc := childText(p, "description"); desc != "" {
 				param.Description = desc
 			}
-			if ptype == "choice" {
+			if ptype == paramChoice {
 				param.Choices = parseChoices(p)
 			}
 			out = append(out, param)
@@ -525,7 +564,114 @@ func parseChoices(p *etree.Element) []string {
 
 // mergeJobConfig applies patch onto the original config.xml, preserving every
 // element it does not touch, and returns the serialized result.
-func mergeJobConfig(xml string, patch *JobConfig) (string, error) {
+type jobPatch struct {
+	cfg JobConfig
+}
+
+func newJobPatch(cfg JobConfig) (jobPatch, error) {
+	if cfg.Description == nil && cfg.Disabled == nil && cfg.ConcurrentBuilds == nil &&
+		cfg.Definition == nil && cfg.Triggers == nil && cfg.Parameters == nil && cfg.BuildRetention == nil {
+		return jobPatch{}, errors.New("patch must contain at least one field to update")
+	}
+	for i, t := range cfg.Triggers {
+		if err := t.validate(); err != nil {
+			return jobPatch{}, fmt.Errorf("patch.triggers[%d]: %w", i, err)
+		}
+	}
+	seen := map[string]int{}
+	for i, p := range cfg.Parameters {
+		if err := p.validate(); err != nil {
+			return jobPatch{}, fmt.Errorf("patch.parameters[%d]: %w", i, err)
+		}
+		if first, dup := seen[p.Name]; dup {
+			return jobPatch{}, fmt.Errorf("patch.parameters[%d]: parameter %q is already defined at patch.parameters[%d]", i, p.Name, first)
+		}
+		seen[p.Name] = i
+	}
+	if d := cfg.Definition; d != nil {
+		if err := d.validate(); err != nil {
+			return jobPatch{}, fmt.Errorf("patch.definition: %w", err)
+		}
+	}
+	return jobPatch{cfg: cfg}, nil
+}
+
+func (p Parameter) validate() error {
+	if _, ok := paramClass[p.Type]; !ok {
+		return fmt.Errorf("unknown parameter type %q (want string, boolean, text, choice or password)", p.Type)
+	}
+	if strings.TrimSpace(p.Name) == "" {
+		return errors.New("parameter name must not be empty")
+	}
+	switch p.Type {
+	case paramChoice:
+		if len(p.Choices) == 0 {
+			return fmt.Errorf("choice parameter %q needs at least one choice", p.Name)
+		}
+		if p.Default != nil {
+			return fmt.Errorf("choice parameter %q takes no default: Jenkins uses the first choice", p.Name)
+		}
+		return nil
+	case paramBoolean:
+		if p.Default != nil && *p.Default != "true" && *p.Default != "false" {
+			return fmt.Errorf("boolean parameter %q: default must be \"true\" or \"false\", got %q", p.Name, *p.Default)
+		}
+	}
+	if p.Choices != nil {
+		return fmt.Errorf("%s parameter %q takes no choices", p.Type, p.Name)
+	}
+	return nil
+}
+
+func (d PipelineDef) validate() error {
+	switch d.Type {
+	case "", definitionInline, definitionSCM:
+	default:
+		return fmt.Errorf("unknown definition type %q (want %q or %q)", d.Type, definitionInline, definitionSCM)
+	}
+	if d.Type == definitionInline && (d.ScriptPath != nil || d.Lightweight != nil) {
+		return errors.New("scriptPath and lightweight apply only to scm definitions")
+	}
+	if d.Type == definitionSCM && (d.Script != nil || d.Sandbox != nil) {
+		return errors.New("script and sandbox apply only to inline definitions")
+	}
+	if d.Type == "" && (d.Script != nil || d.Sandbox != nil) && (d.ScriptPath != nil || d.Lightweight != nil) {
+		return errors.New("script/sandbox (inline) and scriptPath/lightweight (scm) cannot be combined")
+	}
+	return nil
+}
+
+func patchedFields(p JobConfig) []string {
+	var out []string
+	add := func(set bool, name string) {
+		if set {
+			out = append(out, name)
+		}
+	}
+	add(p.Disabled != nil, "disabled")
+	add(p.ConcurrentBuilds != nil, "concurrentBuilds")
+	add(p.Definition != nil, "definition")
+	add(p.Triggers != nil, "triggers")
+	add(p.Parameters != nil, "parameters")
+	add(p.BuildRetention != nil, "buildRetention")
+	return out
+}
+
+func checkPatchSupported(jobType, tag string, p JobConfig) error {
+	if p.Definition != nil && jobType != "pipeline" {
+		return fmt.Errorf("patch.definition applies only to pipeline jobs, and this job is %s (<%s>)", jobType, tag)
+	}
+	if jobType == "freestyle" || jobType == "pipeline" {
+		return nil
+	}
+	if fields := patchedFields(p); len(fields) > 0 {
+		return fmt.Errorf("patch.%s: only description can be changed on a %s job (<%s>); the other fields are supported for freestyle and pipeline jobs", strings.Join(fields, ", patch."), jobType, tag)
+	}
+	return nil
+}
+
+func mergeJobConfig(xml string, jp jobPatch) (string, error) {
+	patch := jp.cfg
 	doc, decl, err := newConfigDoc(xml)
 	if err != nil {
 		return "", err
@@ -533,6 +679,9 @@ func mergeJobConfig(xml string, patch *JobConfig) (string, error) {
 	root := doc.Root()
 	if root == nil {
 		return "", errEmptyConfig
+	}
+	if err := checkPatchSupported(jobTypeFromTag(root.Tag), root.Tag, patch); err != nil {
+		return "", err
 	}
 
 	if patch.Description != nil {
@@ -545,16 +694,13 @@ func mergeJobConfig(xml string, patch *JobConfig) (string, error) {
 		setChildText(root, "concurrentBuild", strconv.FormatBool(*patch.ConcurrentBuilds))
 	}
 
-	if patch.Definition != nil && jobTypeFromTag(root.Tag) == "pipeline" {
-		mergeDefinition(root, patch.Definition)
+	if patch.Definition != nil {
+		if err := mergeDefinition(root, *patch.Definition); err != nil {
+			return "", err
+		}
 	}
 
 	if patch.Triggers != nil {
-		for _, t := range patch.Triggers {
-			if err := t.validate(); err != nil {
-				return "", err
-			}
-		}
 		trig := writableTriggerContainer(root)
 		removeChild(trig, tagTimerTrigger)
 		removeChild(trig, tagSCMTrigger)
@@ -581,19 +727,17 @@ func mergeJobConfig(xml string, patch *JobConfig) (string, error) {
 			prop := props.CreateElement(tagParamsProp)
 			defs := prop.CreateElement("parameterDefinitions")
 			for _, p := range patch.Parameters {
-				class := paramClass[p.Type]
-				if class == "" {
-					continue
-				}
-				el := defs.CreateElement(class)
+				el := defs.CreateElement(paramClass[p.Type])
 				el.CreateElement("name").SetText(p.Name)
-				def := ""
-				if p.Default != nil {
-					def = *p.Default
+				if p.Type != paramChoice {
+					def := ""
+					if p.Default != nil {
+						def = *p.Default
+					}
+					el.CreateElement("defaultValue").SetText(def)
 				}
-				el.CreateElement("defaultValue").SetText(def)
 				el.CreateElement("description").SetText(p.Description)
-				if p.Type == "choice" {
+				if p.Type == paramChoice {
 					choices := el.CreateElement("choices")
 					choices.CreateAttr("class", "java.util.Arrays$ArrayList")
 					a := choices.CreateElement("a")
@@ -636,37 +780,64 @@ func mergeJobConfig(xml string, patch *JobConfig) (string, error) {
 	return decl + "\n" + strings.TrimLeft(out, "\n"), nil
 }
 
-func mergeDefinition(root *etree.Element, def *PipelineDef) {
+func mergeDefinition(root *etree.Element, def PipelineDef) error {
 	existing := root.SelectElement("definition")
+	current, class := definitionTypeOf(existing)
+	target := def.Type
+	if target == "" {
+		switch {
+		case def.Script != nil || def.Sandbox != nil:
+			target = definitionInline
+		case def.ScriptPath != nil || def.Lightweight != nil:
+			target = definitionSCM
+		}
+	}
+	if target == "" {
+		return errors.New("patch.definition needs a type or at least one field to change")
+	}
+	switching := current != target
+	if current == "" && existing != nil {
+		return fmt.Errorf("patch.definition: the job's definition is %s, which only inline and scm definitions can replace by switching type explicitly", class)
+	}
 	if existing == nil {
 		existing = root.CreateElement("definition")
 	}
-	switch def.Type {
-	case "inline":
-		setAttr(existing, "class", "org.jenkinsci.plugins.workflow.cps.CpsFlowDefinition")
-		setChildText(existing, "script", def.Script)
-		setChildText(existing, "sandbox", "true")
+	switch target {
+	case definitionInline:
+		if switching && def.Script == nil {
+			return errors.New("patch.definition: switching to an inline definition needs script")
+		}
+		setAttr(existing, "class", classCpsFlowDefinition)
+		if def.Script != nil {
+			setChildText(existing, "script", *def.Script)
+		}
+		switch {
+		case def.Sandbox != nil:
+			setChildText(existing, "sandbox", strconv.FormatBool(*def.Sandbox))
+		case switching:
+			setChildText(existing, "sandbox", "true")
+		}
 		removeChild(existing, "scm")
 		removeChild(existing, "scriptPath")
 		removeChild(existing, "lightweight")
-	case "scm":
-		setAttr(existing, "class", "org.jenkinsci.plugins.workflow.cps.CpsScmFlowDefinition")
-		if def.ScriptPath != "" {
-			setChildText(existing, "scriptPath", def.ScriptPath)
+	case definitionSCM:
+		if existing.SelectElement("scm") == nil {
+			return errors.New("patch.definition: an scm definition needs the job's SCM, and this job has none; configure the SCM in Jenkins first")
+		}
+		if switching && def.ScriptPath == nil {
+			return errors.New("patch.definition: switching to an scm definition needs scriptPath")
+		}
+		setAttr(existing, "class", classCpsScmFlowDefinition)
+		if def.ScriptPath != nil {
+			setChildText(existing, "scriptPath", *def.ScriptPath)
 		}
 		if def.Lightweight != nil {
 			setChildText(existing, "lightweight", strconv.FormatBool(*def.Lightweight))
 		}
 		removeChild(existing, "script")
 		removeChild(existing, "sandbox")
-	default:
-		if def.ScriptPath != "" {
-			setChildText(existing, "scriptPath", def.ScriptPath)
-		}
-		if def.Script != "" {
-			setChildText(existing, "script", def.Script)
-		}
 	}
+	return nil
 }
 
 // ── etree helpers ───────────────────────────────────────────────────────────

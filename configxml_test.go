@@ -32,7 +32,7 @@ func TestParsePipelineScm(t *testing.T) {
 	if cfg.Type != "pipeline" {
 		t.Errorf("type = %q", cfg.Type)
 	}
-	if cfg.Definition == nil || cfg.Definition.Type != "scm" || cfg.Definition.ScriptPath != "ci/Jenkinsfile" {
+	if cfg.Definition == nil || cfg.Definition.Type != "scm" || *cfg.Definition.ScriptPath != "ci/Jenkinsfile" {
 		t.Errorf("definition = %+v", cfg.Definition)
 	}
 	if cfg.Definition.Lightweight == nil || !*cfg.Definition.Lightweight {
@@ -49,12 +49,12 @@ func TestParsePipelineScm(t *testing.T) {
 func TestMergePreservesUnknownAndUpdates(t *testing.T) {
 	newDesc := "updated"
 	num := 15
-	patch := &JobConfig{
+	patch := JobConfig{
 		Description:    &newDesc,
 		BuildRetention: &BuildRetention{NumToKeep: &num},
-		Definition:     &PipelineDef{Type: "inline", Script: "echo hi"},
+		Definition:     &PipelineDef{Type: definitionInline, Script: ptr("echo hi")},
 	}
-	out, err := mergeJobConfig(scmPipelineXML, patch)
+	out, err := mergeJobConfig(scmPipelineXML, mustPatch(t, patch))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,7 +80,7 @@ func TestMergePreservesUnknownAndUpdates(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Definition == nil || cfg.Definition.Type != "inline" || cfg.Definition.Script != "echo hi" {
+	if cfg.Definition == nil || cfg.Definition.Type != definitionInline || *cfg.Definition.Script != "echo hi" {
 		t.Errorf("round-trip definition = %+v", cfg.Definition)
 	}
 	if cfg.BuildRetention == nil || cfg.BuildRetention.NumToKeep == nil || *cfg.BuildRetention.NumToKeep != 15 {
@@ -89,13 +89,13 @@ func TestMergePreservesUnknownAndUpdates(t *testing.T) {
 }
 
 func TestMergeChoiceParameters(t *testing.T) {
-	patch := &JobConfig{
+	patch := JobConfig{
 		Parameters: []Parameter{
-			{Type: "choice", Name: "env", Choices: []string{"dev", "prod"}},
-			{Type: "string", Name: "tag", Default: ptr("latest")},
+			{Type: paramChoice, Name: "env", Choices: []string{"dev", "prod"}},
+			{Type: paramString, Name: "tag", Default: ptr("latest")},
 		},
 	}
-	out, err := mergeJobConfig(scmPipelineXML, patch)
+	out, err := mergeJobConfig(scmPipelineXML, mustPatch(t, patch))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -120,7 +120,7 @@ func TestMergeChoiceParameters(t *testing.T) {
 	}
 }
 
-func ptr(s string) *string { return &s }
+func ptr[T any](v T) *T { return &v }
 
 const gitSCMXML = `<scm class="hudson.plugins.git.GitSCM" plugin="git@5.2.1">
     <configVersion>2</configVersion>
@@ -280,8 +280,8 @@ func TestTriggersRoundTripWebhookPollTrigger(t *testing.T) {
 		t.Fatalf("triggers = %+v, want %+v", cfg.Triggers, want)
 	}
 
-	patch := &JobConfig{Triggers: append(cfg.Triggers, Trigger{Type: triggerCron, Spec: "H 2 * * *"})}
-	out, err := mergeJobConfig(xml, patch)
+	patch := JobConfig{Triggers: append(cfg.Triggers, Trigger{Type: triggerCron, Spec: "H 2 * * *"})}
+	out, err := mergeJobConfig(xml, mustPatch(t, patch))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -302,7 +302,7 @@ func TestMergeRejectsInvalidTriggers(t *testing.T) {
 		{Type: "github", Spec: ""},
 		{Type: triggerCron, Spec: "H * * * *", IgnorePostCommitHooks: true},
 	} {
-		if _, err := mergeJobConfig(scmPipelineXML, &JobConfig{Triggers: []Trigger{tr}}); err == nil {
+		if _, err := newJobPatch(JobConfig{Triggers: []Trigger{tr}}); err == nil {
 			t.Errorf("trigger %+v: want an error", tr)
 		}
 	}
@@ -350,8 +350,8 @@ func TestPipelineTriggersLiveInJobProperty(t *testing.T) {
 		t.Fatalf("triggers = %+v, want %+v", cfg.Triggers, want)
 	}
 
-	patch := &JobConfig{Triggers: []Trigger{{Type: triggerSCMPoll}}}
-	out, err := mergeJobConfig(xml, patch)
+	patch := JobConfig{Triggers: []Trigger{{Type: triggerSCMPoll}}}
+	out, err := mergeJobConfig(xml, mustPatch(t, patch))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -372,7 +372,7 @@ func TestLegacyPipelineRootTriggersMoveToJobProperty(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	out, err := mergeJobConfig(scmPipelineXML, &JobConfig{Triggers: cfg.Triggers})
+	out, err := mergeJobConfig(scmPipelineXML, mustPatch(t, JobConfig{Triggers: cfg.Triggers}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -383,7 +383,7 @@ func TestLegacyPipelineRootTriggersMoveToJobProperty(t *testing.T) {
 
 func TestFreestyleTriggersStayAtRoot(t *testing.T) {
 	xml := freestyleXML(fmt.Sprintf(gitSCMXML, "**", ""), "", false)
-	out, err := mergeJobConfig(xml, &JobConfig{Triggers: []Trigger{{Type: triggerSCMPoll}}})
+	out, err := mergeJobConfig(xml, mustPatch(t, JobConfig{Triggers: []Trigger{{Type: triggerSCMPoll}}}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -419,7 +419,7 @@ func TestTriggersPatchKeepsUnrepresentedTriggers(t *testing.T) {
 		if !reflect.DeepEqual(cfg.OtherTriggers, []string{"com.cloudbees.jenkins.GitHubPushTrigger"}) {
 			t.Errorf("%s: otherTriggers = %v", name, cfg.OtherTriggers)
 		}
-		out, err := mergeJobConfig(xml, &JobConfig{Triggers: []Trigger{{Type: triggerCron, Spec: "H 4 * * *"}}})
+		out, err := mergeJobConfig(xml, mustPatch(t, JobConfig{Triggers: []Trigger{{Type: triggerCron, Spec: "H 4 * * *"}}}))
 		if err != nil {
 			t.Fatalf("%s: %v", name, err)
 		}
@@ -433,5 +433,125 @@ func TestTriggersPatchKeepsUnrepresentedTriggers(t *testing.T) {
 		if _, prop := triggerLocations(t, out); name != "freestyle" && prop != 2 {
 			t.Errorf("%s: want both triggers in the job property, got %d:\n%s", name, prop, out)
 		}
+	}
+}
+
+func mustPatch(t *testing.T, cfg JobConfig) jobPatch {
+	t.Helper()
+	p, err := newJobPatch(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+func TestNewJobPatchRejectsWhatMergeCannotHonour(t *testing.T) {
+	cases := map[string]struct {
+		cfg  JobConfig
+		want string
+	}{
+		"empty patch":            {JobConfig{}, "at least one field"},
+		"unknown parameter type": {JobConfig{Parameters: []Parameter{{Type: "file", Name: "f"}}}, `patch.parameters[0]: unknown parameter type "file"`},
+		"empty parameter name":   {JobConfig{Parameters: []Parameter{{Type: paramString, Name: " "}}}, "name must not be empty"},
+		"duplicate parameter": {JobConfig{Parameters: []Parameter{{Type: paramString, Name: "A"}, {Type: paramText, Name: "A"}}},
+			`patch.parameters[1]: parameter "A" is already defined at patch.parameters[0]`},
+		"choice without choices": {JobConfig{Parameters: []Parameter{{Type: paramChoice, Name: "c"}}}, "needs at least one choice"},
+		"choice with default":    {JobConfig{Parameters: []Parameter{{Type: paramChoice, Name: "c", Choices: []string{"a"}, Default: ptr("a")}}}, "takes no default"},
+		"string with choices":    {JobConfig{Parameters: []Parameter{{Type: paramString, Name: "s", Choices: []string{"a"}}}}, "takes no choices"},
+		"boolean default":        {JobConfig{Parameters: []Parameter{{Type: paramBoolean, Name: "b", Default: ptr("yes")}}}, `default must be "true" or "false", got "yes"`},
+		"unknown definition":     {JobConfig{Definition: &PipelineDef{Type: "groovy"}}, `unknown definition type "groovy"`},
+		"inline with scriptPath": {JobConfig{Definition: &PipelineDef{Type: definitionInline, ScriptPath: ptr("J")}}, "apply only to scm"},
+		"scm with script":        {JobConfig{Definition: &PipelineDef{Type: definitionSCM, Script: ptr("x")}}, "apply only to inline"},
+		"mixed untyped":          {JobConfig{Definition: &PipelineDef{Script: ptr("x"), ScriptPath: ptr("J")}}, "cannot be combined"},
+		"bad trigger":            {JobConfig{Triggers: []Trigger{{Type: "github"}}}, `patch.triggers[0]: unknown trigger type "github"`},
+	}
+	for name, c := range cases {
+		if _, err := newJobPatch(c.cfg); err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: want error containing %q, got %v", name, c.want, err)
+		}
+	}
+}
+
+const multibranchXML = `<?xml version='1.1' encoding='UTF-8'?>
+<org.jenkinsci.plugins.workflow.multibranch.WorkflowMultiBranchProject plugin="workflow-multibranch@1">
+  <description>mb</description>
+  <triggers/>
+</org.jenkinsci.plugins.workflow.multibranch.WorkflowMultiBranchProject>`
+
+func TestMergeRejectsFieldsTheJobTypeDoesNotHave(t *testing.T) {
+	freestyle := freestyleXML(fmt.Sprintf(gitSCMXML, "**", ""), pollTrigger, false)
+	cases := []struct {
+		name, xml string
+		cfg       JobConfig
+		want      string
+	}{
+		{"definition on freestyle", freestyle, JobConfig{Definition: &PipelineDef{Type: definitionInline, Script: ptr("x")}}, "patch.definition applies only to pipeline jobs, and this job is freestyle (<project>)"},
+		{"triggers on multibranch", multibranchXML, JobConfig{Triggers: []Trigger{{Type: triggerCron, Spec: "H * * * *"}}}, "patch.triggers: only description can be changed on a multibranch job"},
+		{"several fields on multibranch", multibranchXML, JobConfig{Disabled: ptr(true), BuildRetention: &BuildRetention{NumToKeep: ptr(3)}}, "patch.disabled, patch.buildRetention: only description"},
+	}
+	for _, c := range cases {
+		if _, err := mergeJobConfig(c.xml, mustPatch(t, c.cfg)); err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: want error containing %q, got %v", c.name, c.want, err)
+		}
+	}
+	out, err := mergeJobConfig(multibranchXML, mustPatch(t, JobConfig{Description: ptr("new")}))
+	if err != nil || !strings.Contains(out, "<description>new</description>") {
+		t.Errorf("description on multibranch: %v\n%s", err, out)
+	}
+}
+
+const inlinePipelineXML = `<?xml version='1.1' encoding='UTF-8'?>
+<flow-definition>
+  <definition class="org.jenkinsci.plugins.workflow.cps.CpsFlowDefinition">
+    <script>echo old</script>
+    <sandbox>false</sandbox>
+  </definition>
+</flow-definition>`
+
+func TestMergeDefinitionSemantics(t *testing.T) {
+	out, err := mergeJobConfig(inlinePipelineXML, mustPatch(t, JobConfig{Definition: &PipelineDef{Script: ptr("echo new")}}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := parseJobConfig(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d := cfg.Definition; d == nil || d.Type != definitionInline || *d.Script != "echo new" || d.Sandbox == nil || *d.Sandbox {
+		t.Errorf("editing an unsandboxed inline script must keep sandbox=false: %+v", d)
+	}
+
+	if _, err := mergeJobConfig(inlinePipelineXML, mustPatch(t, JobConfig{Definition: &PipelineDef{Type: definitionSCM, ScriptPath: ptr("Jenkinsfile")}})); err == nil || !strings.Contains(err.Error(), "this job has none") {
+		t.Errorf("switching to scm without an SCM: want error, got %v", err)
+	}
+
+	scmJob := pipelineWithTriggerProperty("")
+	if _, err := mergeJobConfig(scmJob, mustPatch(t, JobConfig{Definition: &PipelineDef{Type: definitionInline}})); err == nil || !strings.Contains(err.Error(), "needs script") {
+		t.Errorf("switching to inline without script: want error, got %v", err)
+	}
+	out, err = mergeJobConfig(scmJob, mustPatch(t, JobConfig{Definition: &PipelineDef{Type: definitionInline, Script: ptr("echo hi")}}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg, err = parseJobConfig(out); err != nil || cfg.Definition.Sandbox == nil || !*cfg.Definition.Sandbox || strings.Contains(out, "<scriptPath>") {
+		t.Errorf("switching to inline enables the sandbox and drops scm fields: %+v %v\n%s", cfg.Definition, err, out)
+	}
+
+	out, err = mergeJobConfig(scmJob, mustPatch(t, JobConfig{Definition: &PipelineDef{ScriptPath: ptr("ci/Jenkinsfile")}}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg, err = parseJobConfig(out); err != nil || cfg.Definition.Type != definitionSCM || *cfg.Definition.ScriptPath != "ci/Jenkinsfile" || len(cfg.SCM) != 1 {
+		t.Errorf("updating scriptPath keeps the scm definition and its SCM: %+v %v", cfg, err)
+	}
+}
+
+func TestMergeChoiceParameterHasNoDefaultValue(t *testing.T) {
+	out, err := mergeJobConfig(scmPipelineXML, mustPatch(t, JobConfig{Parameters: []Parameter{{Type: paramChoice, Name: "env", Choices: []string{"dev", "prod"}}}}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out, "<defaultValue") {
+		t.Errorf("choice parameters must not get a defaultValue element Jenkins ignores:\n%s", out)
 	}
 }

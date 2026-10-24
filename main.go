@@ -492,18 +492,18 @@ func stringValues(m map[string]any) map[string]string {
 	return out
 }
 
-func parsePatch(raw map[string]any) (*JobConfig, error) {
+func parsePatch(raw map[string]any) (jobPatch, error) {
 	b, err := json.Marshal(raw)
 	if err != nil {
-		return nil, fmt.Errorf("invalid patch: %w", err)
+		return jobPatch{}, fmt.Errorf("invalid patch: %w", err)
 	}
 	dec := json.NewDecoder(bytes.NewReader(b))
 	dec.DisallowUnknownFields()
 	var patch JobConfig
 	if err := dec.Decode(&patch); err != nil {
-		return nil, fmt.Errorf("invalid patch (scm, otherTriggers and buildRevision are read-only): %w", err)
+		return jobPatch{}, fmt.Errorf("invalid patch (type, scm, otherTriggers and buildRevision are read-only): %w", err)
 	}
-	return &patch, nil
+	return newJobPatch(patch)
 }
 
 func reportConnection(c *JenkinsClient) {

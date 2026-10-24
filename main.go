@@ -26,22 +26,14 @@ func main() {
 		}
 	}
 
-	if env := os.Getenv("JENKINS_MCP_FORMAT"); env != "" {
-		f, err := parseOutputFormat(strings.ToLower(env))
-		if err != nil {
-			logErr("[jenkins-mcp] JENKINS_MCP_FORMAT: " + err.Error())
-			os.Exit(1)
-		}
-		defaultFormat = f
-	}
-
-	tc := resolveTransport(os.Args[1:])
-
-	config, err := loadConfig(os.Args[1:])
+	settings, err := loadStartupSettings(os.Args[1:])
 	if err != nil {
 		logErr("[jenkins-mcp] " + err.Error())
 		os.Exit(1)
 	}
+	defaultFormat = settings.format
+	tc := settings.transport
+	config := settings.config
 	if config != nil {
 		jenkins = NewJenkinsClient(*config)
 		go reportConnection(jenkins)
@@ -66,6 +58,31 @@ func main() {
 		logErr("[jenkins-mcp] fatal: " + serveErr.Error())
 		os.Exit(1)
 	}
+}
+
+type startupSettings struct {
+	format    outputFormat
+	transport transportConfig
+	config    *Config
+}
+
+func loadStartupSettings(args []string) (startupSettings, error) {
+	loadDotEnv()
+	settings := startupSettings{format: formatTOON}
+	if env := os.Getenv("JENKINS_MCP_FORMAT"); env != "" {
+		f, err := parseOutputFormat(strings.ToLower(env))
+		if err != nil {
+			return startupSettings{}, fmt.Errorf("JENKINS_MCP_FORMAT: %w", err)
+		}
+		settings.format = f
+	}
+	settings.transport = resolveTransport(args)
+	config, err := loadConfig(args)
+	if err != nil {
+		return startupSettings{}, err
+	}
+	settings.config = config
+	return settings, nil
 }
 
 // newServer builds the MCP server: registers every tool from tools.json (raw

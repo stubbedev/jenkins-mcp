@@ -40,8 +40,6 @@ type configSource struct {
 }
 
 func loadConfig(args []string) (*Config, error) {
-	loadDotEnv()
-
 	sources, err := configSources(args)
 	if err != nil {
 		return nil, err

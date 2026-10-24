@@ -161,3 +161,26 @@ func TestLoadConfigFailsLoudly(t *testing.T) {
 		})
 	}
 }
+
+func TestDotEnvFeedsEveryStartupSetting(t *testing.T) {
+	dir := isolateConfigEnv(t)
+	for _, k := range []string{"JENKINS_MCP_HTTP", "JENKINS_MCP_HTTP_PATH", "JENKINS_MCP_HTTP_STATELESS", "JENKINS_MCP_FORMAT"} {
+		t.Setenv(k, "")
+	}
+	writeConfig(t, filepath.Join(dir, ".env"), `JENKINS_MCP_HTTP=127.0.0.1:9123
+JENKINS_MCP_HTTP_PATH=/rpc
+JENKINS_MCP_HTTP_STATELESS=true
+JENKINS_MCP_FORMAT=json
+JENKINS_URL=https://dotenv
+JENKINS_USERNAME=du
+JENKINS_TOKEN=dt
+`)
+	got, err := loadStartupSettings(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := transportConfig{http: true, addr: "127.0.0.1:9123", path: "/rpc", stateless: true}
+	if got.transport != want || got.format != formatJSON || got.config == nil || got.config.URL != "https://dotenv" {
+		t.Errorf("settings = %+v (config %+v); want transport %+v, format json and the .env Jenkins URL", got, got.config, want)
+	}
+}

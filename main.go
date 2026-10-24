@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"regexp"
 	"strconv"
@@ -163,6 +164,10 @@ func runTool(ctx context.Context, name string, args map[string]any) (string, err
 		if err != nil {
 			return "", err
 		}
+		scanLimit, err := argInt(args, "scanLimit")
+		if err != nil {
+			return "", err
+		}
 		jobPath, err := resolveJobPath(ctx, argString(args, "jobPath"))
 		if err != nil {
 			return "", err
@@ -171,7 +176,7 @@ func runTool(ctx context.Context, name string, args map[string]any) (string, err
 			jobPath:           jobPath,
 			buildNumber:       ref,
 			sha:               argString(args, "sha"),
-			scanLimit:         argInt(args, "scanLimit"),
+			scanLimit:         scanLimit,
 			includeStages:     argBoolDefault(args, "includeStages", true),
 			includeChangeSet:  argBoolDefault(args, "includeChangeSet", true),
 			includeArtifacts:  argBoolDefault(args, "includeArtifacts", true),
@@ -183,32 +188,48 @@ func runTool(ctx context.Context, name string, args map[string]any) (string, err
 		if err != nil {
 			return "", err
 		}
+		tailChars, err := argInt(args, "tailChars")
+		if err != nil {
+			return "", err
+		}
 		jobPath, err := resolveJobPath(ctx, argString(args, "jobPath"))
 		if err != nil {
 			return "", err
 		}
-		return jenkins.getLog(ctx, jobPath, bn, argString(args, "stageId"), argInt(args, "tailChars"), argBool(args, "full"))
+		return jenkins.getLog(ctx, jobPath, bn, argString(args, "stageId"), tailChars, argBool(args, "full"))
 
 	case "jenkins_get_tests":
 		bn, err := coerceBuildNumber(args["buildNumber"])
 		if err != nil {
 			return "", err
 		}
+		maxFailures, err := argInt(args, "maxFailures")
+		if err != nil {
+			return "", err
+		}
 		jobPath, err := resolveJobPath(ctx, argString(args, "jobPath"))
 		if err != nil {
 			return "", err
 		}
-		return jenkins.getTestsTool(ctx, jobPath, bn, argInt(args, "maxFailures"), argBoolDefault(args, "includeStackTrace", true))
+		return jenkins.getTestsTool(ctx, jobPath, bn, maxFailures, argBoolDefault(args, "includeStackTrace", true))
 
 	case "jenkins_list_builds":
+		limit, err := argInt(args, "limit")
+		if err != nil {
+			return "", err
+		}
 		jobPath, err := resolveJobPath(ctx, argString(args, "jobPath"))
 		if err != nil {
 			return "", err
 		}
-		return jenkins.listJob(ctx, jobPath, argInt(args, "limit"))
+		return jenkins.listJob(ctx, jobPath, limit)
 
 	case "jenkins_list_jobs":
-		return jenkins.listJobsTool(ctx, argString(args, "folder"), argInt(args, "limit"))
+		limit, err := argInt(args, "limit")
+		if err != nil {
+			return "", err
+		}
+		return jenkins.listJobsTool(ctx, argString(args, "folder"), limit)
 
 	case "jenkins_get_queue":
 		return jenkins.getQueueTool(ctx)
@@ -449,18 +470,29 @@ func argString(args map[string]any, key string) string {
 	return ""
 }
 
-func argInt(args map[string]any, key string) int {
-	switch v := args[key].(type) {
+const maxExactJSONInteger = 1 << 53
+
+func intValue(key string, value any) (int, error) {
+	switch v := value.(type) {
 	case float64:
-		return int(v)
-	case int:
-		return v
+		if v == math.Trunc(v) && math.Abs(v) <= maxExactJSONInteger {
+			return int(v), nil
+		}
 	case string:
 		if n, err := strconv.Atoi(v); err == nil {
-			return n
+			return n, nil
 		}
 	}
-	return 0
+	shown, _ := json.Marshal(value)
+	return 0, fmt.Errorf("%s must be an integer, got %s", key, shown)
+}
+
+func argInt(args map[string]any, key string) (int, error) {
+	v, ok := args[key]
+	if !ok || v == nil {
+		return 0, nil
+	}
+	return intValue(key, v)
 }
 
 func argBool(args map[string]any, key string) bool {
@@ -500,42 +532,35 @@ func coerceBuildRef(value any) (string, error) {
 	switch v := value.(type) {
 	case nil:
 		return "", nil
-	case float64:
-		return strconv.Itoa(int(v)), nil
-	case int:
-		return strconv.Itoa(v), nil
 	case string:
-		if v == "" {
-			return "", nil
-		}
-		if _, err := strconv.Atoi(v); err == nil {
-			return v, nil
-		}
 		switch v {
+		case "":
+			return "", nil
 		case "lastBuild", "lastSuccessfulBuild", "lastFailedBuild", "lastCompletedBuild":
 			return v, nil
 		}
-		return "", fmt.Errorf("invalid buildNumber %q. Use a number or one of: lastBuild, lastSuccessfulBuild, lastFailedBuild, lastCompletedBuild", v)
+		if _, err := strconv.Atoi(v); err != nil {
+			return "", fmt.Errorf("invalid buildNumber %q. Use a number or one of: lastBuild, lastSuccessfulBuild, lastFailedBuild, lastCompletedBuild", v)
+		}
 	}
-	return "", fmt.Errorf("buildNumber must be a number or string")
+	n, err := intValue("buildNumber", value)
+	if err != nil {
+		return "", err
+	}
+	return strconv.Itoa(n), nil
 }
 
 // coerceBuildNumber requires an explicit numeric build number (no aliases).
 func coerceBuildNumber(value any) (int, error) {
 	switch v := value.(type) {
-	case float64:
-		return int(v), nil
-	case int:
-		return v, nil
-	case string:
-		if n, err := strconv.Atoi(v); err == nil {
-			return n, nil
-		}
-		return 0, fmt.Errorf("buildNumber must be a build number (number or numeric string). Aliases like \"lastBuild\" are not allowed for this tool — call jenkins_get_build first to resolve them")
 	case nil:
 		return 0, fmt.Errorf("buildNumber is required")
+	case string:
+		if _, err := strconv.Atoi(v); err != nil {
+			return 0, fmt.Errorf("buildNumber must be a build number (number or numeric string), got %q. Aliases like \"lastBuild\" are not allowed for this tool — call jenkins_get_build first to resolve them", v)
+		}
 	}
-	return 0, fmt.Errorf("buildNumber must be a number or numeric string")
+	return intValue("buildNumber", value)
 }
 
 func parsePatch(raw any) (*JobConfig, error) {

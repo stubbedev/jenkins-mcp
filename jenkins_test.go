@@ -209,3 +209,45 @@ func TestParsePatchRejectsUnknownFields(t *testing.T) {
 		}
 	}
 }
+
+func TestArgIntRejectsNonIntegers(t *testing.T) {
+	ok := map[string]struct {
+		in   any
+		want int
+	}{
+		"absent":         {nil, 0},
+		"json number":    {float64(30), 30},
+		"numeric string": {"40", 40},
+		"negative":       {float64(-2), -2},
+	}
+	for name, c := range ok {
+		args := map[string]any{}
+		if c.in != nil {
+			args["limit"] = c.in
+		}
+		if got, err := argInt(args, "limit"); err != nil || got != c.want {
+			t.Errorf("%s: argInt = %d, %v; want %d", name, got, err, c.want)
+		}
+	}
+	bad := map[string]struct {
+		in   any
+		want string
+	}{
+		"word":     {"ten", `limit must be an integer, got "ten"`},
+		"fraction": {2.5, "limit must be an integer, got 2.5"},
+		"boolean":  {true, "limit must be an integer, got true"},
+		"huge":     {1e300, "limit must be an integer, got 1e+300"},
+		"empty":    {"", `limit must be an integer, got ""`},
+	}
+	for name, c := range bad {
+		if got, err := argInt(map[string]any{"limit": c.in}, "limit"); err == nil || err.Error() != c.want {
+			t.Errorf("%s: argInt = %d, %v; want error %q", name, got, err, c.want)
+		}
+	}
+	if _, err := coerceBuildNumber(4.5); err == nil || !strings.Contains(err.Error(), "buildNumber must be an integer, got 4.5") {
+		t.Errorf("coerceBuildNumber(4.5): want integer error, got %v", err)
+	}
+	if _, err := coerceBuildRef(4.5); err == nil || !strings.Contains(err.Error(), "buildNumber must be an integer, got 4.5") {
+		t.Errorf("coerceBuildRef(4.5): want integer error, got %v", err)
+	}
+}

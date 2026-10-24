@@ -204,3 +204,24 @@ func TestCheckConnection(t *testing.T) {
 		}
 	}
 }
+
+func TestCallToolRejectsNonNumericLimit(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("Jenkins must not be queried with an invalid limit, got %s", r.URL)
+	}))
+	t.Cleanup(srv.Close)
+	saved := jenkins
+	jenkins = NewJenkinsClient(Config{URL: srv.URL, Username: "u", Token: "t"})
+	t.Cleanup(func() { jenkins = saved })
+
+	res, err := connectTest(t).CallTool(context.Background(), &mcp.CallToolParams{
+		Name:      "jenkins_list_jobs",
+		Arguments: map[string]any{"limit": "ten"},
+	})
+	if err != nil {
+		t.Fatalf("CallTool: %v", err)
+	}
+	if !res.IsError || !strings.Contains(resultText(res), `limit must be an integer, got "ten"`) {
+		t.Errorf("want an error naming limit and the value, got %q", resultText(res))
+	}
+}

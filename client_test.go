@@ -439,3 +439,27 @@ func TestConsoleTailHandlesContentRange(t *testing.T) {
 		t.Errorf("206 without Content-Range: want error, got %v", err)
 	}
 }
+
+func TestBuildAndStageLogErrorsAreReported(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/job/demo/lastBuild/api/json", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"number":5,"result":"FAILURE"}`)
+	})
+	mux.HandleFunc("/job/demo/5/wfapi/describe", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusBadGateway) })
+	mux.HandleFunc("/job/demo/5/execution/node/9/wfapi/describe", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"id":"9","name":"Test","status":"FAILED","stageFlowNodes":[{"id":"10","name":"sh","status":"FAILED"},{"id":"11","name":"junit","status":"SUCCESS"}]}`)
+	})
+	mux.HandleFunc("/job/demo/5/execution/node/10/wfapi/log", func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, `{"text":"boom"}`) })
+	mux.HandleFunc("/job/demo/5/execution/node/11/wfapi/log", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusInternalServerError) })
+	c, srv := newTestClient(mux)
+	defer srv.Close()
+
+	_, err := c.getBuildOverview(context.Background(), buildOverviewArgs{jobPath: "demo", buildNumber: "lastBuild", includeStages: true})
+	if err == nil || !strings.Contains(err.Error(), "fetching the stages of build #5") || !strings.Contains(err.Error(), "502") {
+		t.Errorf("a failing wfapi/describe must fail the overview, got %v", err)
+	}
+	_, err = c.getLog(context.Background(), "demo", 5, "9", 1000, false)
+	if err == nil || !strings.Contains(err.Error(), `fetching the log of step "junit" (node 11) in stage "Test"`) {
+		t.Errorf("a failing step log must fail the stage log, got %v", err)
+	}
+}

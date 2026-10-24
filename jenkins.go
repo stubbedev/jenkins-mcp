@@ -633,7 +633,10 @@ func (c *JenkinsClient) getBuildOverview(ctx context.Context, a buildOverviewArg
 	}
 
 	if a.includeParameters {
-		params := extractParameters(build.Actions)
+		params, err := extractParameters(build.Actions)
+		if err != nil {
+			return "", err
+		}
 		if len(params) > 0 {
 			l.blank()
 			l.add("Parameters:")
@@ -648,7 +651,11 @@ func (c *JenkinsClient) getBuildOverview(ctx context.Context, a buildOverviewArg
 	}
 
 	if a.includeStages {
-		if stages, _ := c.getPipelineStages(ctx, a.jobPath, build.Number); stages != nil && len(stages.Stages) > 0 {
+		stages, err := c.getPipelineStages(ctx, a.jobPath, build.Number)
+		if err != nil {
+			return "", fmt.Errorf("fetching the stages of build #%d: %w", build.Number, err)
+		}
+		if stages != nil && len(stages.Stages) > 0 {
 			l.blank()
 			l.add("Stages:")
 			for _, s := range stages.Stages {
@@ -739,6 +746,7 @@ func (c *JenkinsClient) getLog(ctx context.Context, jobPath string, buildNumber 
 		// Fetch every node's log concurrently (bounded), preserving stage order.
 		nodes := details.StageFlowNodes
 		logs := make([]string, len(nodes))
+		errs := make([]error, len(nodes))
 		var wg sync.WaitGroup
 		sem := make(chan struct{}, 8)
 		for i := range nodes {
@@ -747,10 +755,15 @@ func (c *JenkinsClient) getLog(ctx context.Context, jobPath string, buildNumber 
 				defer wg.Done()
 				sem <- struct{}{}
 				defer func() { <-sem }()
-				logs[i], _, _ = c.getPipelineNodeLog(ctx, jobPath, buildNumber, nodes[i].ID)
+				logs[i], _, errs[i] = c.getPipelineNodeLog(ctx, jobPath, buildNumber, nodes[i].ID)
 			}(i)
 		}
 		wg.Wait()
+		for i, err := range errs {
+			if err != nil {
+				return "", fmt.Errorf("fetching the log of step %q (node %s) in stage %q: %w", nodes[i].Name, nodes[i].ID, details.Name, err)
+			}
+		}
 
 		parts := []string{fmt.Sprintf("Stage: %s (%s)", details.Name, details.Status)}
 		for i, n := range nodes {
@@ -1163,7 +1176,7 @@ func extractCause(actions []buildAction) string {
 
 type kv struct{ name, value string }
 
-func extractParameters(actions []buildAction) []kv {
+func extractParameters(actions []buildAction) ([]kv, error) {
 	var out []kv
 	for _, a := range actions {
 		for _, p := range a.Parameters {
@@ -1177,13 +1190,16 @@ func extractParameters(actions []buildAction) []kv {
 			case string:
 				value = v
 			default:
-				b, _ := json.Marshal(v)
+				b, err := json.Marshal(v)
+				if err != nil {
+					return nil, fmt.Errorf("formatting build parameter %q: %w", p.Name, err)
+				}
 				value = string(b)
 			}
 			out = append(out, kv{p.Name, value})
 		}
 	}
-	return out
+	return out, nil
 }
 
 func shaPrefixMatches(target, candidate string) bool {

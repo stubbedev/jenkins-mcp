@@ -620,16 +620,29 @@
             "buildRetention": {
               "type": "object",
               "properties": {
-                "numToKeep": {
-                  "type": "integer",
-                  "description": "Max builds to keep (-1 = unlimited)."
-                },
                 "daysToKeep": {
                   "type": "integer",
-                  "description": "Max days to keep builds (-1 = unlimited)."
+                  "minimum": -1,
+                  "description": "Days to keep builds (-1 = unlimited)."
+                },
+                "numToKeep": {
+                  "type": "integer",
+                  "minimum": -1,
+                  "description": "Max builds to keep (-1 = unlimited)."
+                },
+                "artifactDaysToKeep": {
+                  "type": "integer",
+                  "minimum": -1,
+                  "description": "Days to keep artifacts (-1 = unlimited)."
+                },
+                "artifactNumToKeep": {
+                  "type": "integer",
+                  "minimum": -1,
+                  "description": "Max builds whose artifacts are kept (-1 = unlimited)."
                 }
               },
-              "additionalProperties": false
+              "additionalProperties": false,
+              "description": "Build discarder (log rotation) settings, written to the job's BuildDiscarderProperty. Only the fields given change; each is -1 (unlimited) or at least 1."
             }
           },
           "additionalProperties": false

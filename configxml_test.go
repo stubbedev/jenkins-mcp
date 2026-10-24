@@ -567,3 +567,97 @@ func TestParseJobConfigRejectsMalformedValues(t *testing.T) {
 		}
 	}
 }
+
+func freestyleWithRetention(discarder string) string {
+	return strings.Replace(freestyleXML(fmt.Sprintf(gitSCMXML, "**", ""), pollTrigger, false), "<project>", "<project>\n  "+discarder, 1)
+}
+
+const modernRetention = `<properties>
+    <jenkins.model.BuildDiscarderProperty>
+      <strategy class="hudson.tasks.LogRotator">
+        <daysToKeep>-1</daysToKeep>
+        <numToKeep>10</numToKeep>
+        <artifactDaysToKeep>-1</artifactDaysToKeep>
+        <artifactNumToKeep>3</artifactNumToKeep>
+      </strategy>
+    </jenkins.model.BuildDiscarderProperty>
+  </properties>`
+
+func TestBuildRetentionLivesInBuildDiscarderProperty(t *testing.T) {
+	xml := freestyleWithRetention(modernRetention)
+	cfg, err := parseJobConfig(xml)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := &BuildRetention{DaysToKeep: ptr(-1), NumToKeep: ptr(10), ArtifactDaysToKeep: ptr(-1), ArtifactNumToKeep: ptr(3)}
+	if !reflect.DeepEqual(cfg.BuildRetention, want) {
+		t.Fatalf("retention = %+v, want %+v", cfg.BuildRetention, want)
+	}
+
+	out, err := mergeJobConfig(xml, mustPatch(t, JobConfig{BuildRetention: &BuildRetention{NumToKeep: ptr(25)}}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	back, err := parseJobConfig(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want.NumToKeep = ptr(25)
+	if !reflect.DeepEqual(back.BuildRetention, want) {
+		t.Errorf("patching numToKeep must keep the other limits: %+v, want %+v\n%s", back.BuildRetention, want, out)
+	}
+	if strings.Contains(out, "<buildDiscarder") {
+		t.Errorf("no root <buildDiscarder> may be written:\n%s", out)
+	}
+}
+
+func TestBuildRetentionMigratesLegacyAndBogusElements(t *testing.T) {
+	legacy := freestyleWithRetention(`<logRotator class="hudson.tasks.LogRotator"><daysToKeep>7</daysToKeep><numToKeep>-1</numToKeep><artifactDaysToKeep>-1</artifactDaysToKeep><artifactNumToKeep>-1</artifactNumToKeep></logRotator>
+  <buildDiscarder class="hudson.tasks.LogRotator"><strategy class="hudson.tasks.LogRotator"><numToKeep>99</numToKeep></strategy></buildDiscarder>`)
+	cfg, err := parseJobConfig(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.BuildRetention == nil || *cfg.BuildRetention.DaysToKeep != 7 {
+		t.Fatalf("legacy logRotator not read: %+v", cfg.BuildRetention)
+	}
+	out, err := mergeJobConfig(legacy, mustPatch(t, JobConfig{BuildRetention: &BuildRetention{NumToKeep: ptr(5)}}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out, "<logRotator") || strings.Contains(out, "<buildDiscarder") || !strings.Contains(out, tagBuildDiscarderProp) {
+		t.Errorf("legacy and bogus elements must be replaced by the property:\n%s", out)
+	}
+	back, err := parseJobConfig(out)
+	if err != nil || *back.BuildRetention.DaysToKeep != 7 || *back.BuildRetention.NumToKeep != 5 {
+		t.Errorf("migrated retention = %+v, %v", back.BuildRetention, err)
+	}
+
+	fresh, err := mergeJobConfig(freestyleXML(fmt.Sprintf(gitSCMXML, "**", ""), pollTrigger, false), mustPatch(t, JobConfig{BuildRetention: &BuildRetention{DaysToKeep: ptr(30)}}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if back, err := parseJobConfig(fresh); err != nil || !reflect.DeepEqual(back.BuildRetention, &BuildRetention{DaysToKeep: ptr(30), NumToKeep: ptr(-1), ArtifactDaysToKeep: ptr(-1), ArtifactNumToKeep: ptr(-1)}) {
+		t.Errorf("new retention = %+v, %v", back.BuildRetention, err)
+	}
+}
+
+func TestBuildRetentionRejectsWhatItCannotWrite(t *testing.T) {
+	other := freestyleWithRetention(`<properties><jenkins.model.BuildDiscarderProperty><strategy class="org.example.SmartDiscarder"><keep>3</keep></strategy></jenkins.model.BuildDiscarderProperty></properties>`)
+	cfg, err := parseJobConfig(other)
+	if err != nil || cfg.BuildRetention != nil || cfg.OtherBuildDiscarder != "org.example.SmartDiscarder" {
+		t.Errorf("other discarder: retention %+v, other %q, %v", cfg.BuildRetention, cfg.OtherBuildDiscarder, err)
+	}
+	if _, err := mergeJobConfig(other, mustPatch(t, JobConfig{BuildRetention: &BuildRetention{NumToKeep: ptr(3)}})); err == nil || !strings.Contains(err.Error(), "org.example.SmartDiscarder") {
+		t.Errorf("patching another discarder: want error, got %v", err)
+	}
+	for name, r := range map[string]BuildRetention{"zero": {NumToKeep: ptr(0)}, "below -1": {DaysToKeep: ptr(-2)}, "empty": {}} {
+		if _, err := newJobPatch(JobConfig{BuildRetention: &r}); err == nil || !strings.Contains(err.Error(), "patch.buildRetention") {
+			t.Errorf("%s: want a buildRetention error, got %v", name, err)
+		}
+	}
+	bad := strings.Replace(freestyleWithRetention(modernRetention), "<numToKeep>10<", "<numToKeep>ten<", 1)
+	if _, err := parseJobConfig(bad); err == nil || !strings.Contains(err.Error(), `strategy/numToKeep must be an integer, got "ten"`) {
+		t.Errorf("malformed numToKeep: want error, got %v", err)
+	}
+}

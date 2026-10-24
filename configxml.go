@@ -55,9 +55,10 @@ type JobConfig struct {
 type JobConfigView struct {
 	Type string `json:"type"`
 	JobConfig
-	OtherTriggers []string             `json:"otherTriggers,omitempty"`
-	SCM           []SCMConfig          `json:"scm,omitempty"`
-	BuildRevision BuildRevisionSupport `json:"buildRevision"`
+	OtherBuildDiscarder string               `json:"otherBuildDiscarder,omitempty"`
+	OtherTriggers       []string             `json:"otherTriggers,omitempty"`
+	SCM                 []SCMConfig          `json:"scm,omitempty"`
+	BuildRevision       BuildRevisionSupport `json:"buildRevision"`
 }
 
 type SCMConfig struct {
@@ -172,8 +173,107 @@ type Parameter struct {
 }
 
 type BuildRetention struct {
-	NumToKeep  *int `json:"numToKeep,omitempty"`
-	DaysToKeep *int `json:"daysToKeep,omitempty"`
+	DaysToKeep         *int `json:"daysToKeep,omitempty"`
+	NumToKeep          *int `json:"numToKeep,omitempty"`
+	ArtifactDaysToKeep *int `json:"artifactDaysToKeep,omitempty"`
+	ArtifactNumToKeep  *int `json:"artifactNumToKeep,omitempty"`
+}
+
+type retentionField struct {
+	tag   string
+	value func(*BuildRetention) **int
+}
+
+var retentionFields = []retentionField{
+	{"daysToKeep", func(r *BuildRetention) **int { return &r.DaysToKeep }},
+	{"numToKeep", func(r *BuildRetention) **int { return &r.NumToKeep }},
+	{"artifactDaysToKeep", func(r *BuildRetention) **int { return &r.ArtifactDaysToKeep }},
+	{"artifactNumToKeep", func(r *BuildRetention) **int { return &r.ArtifactNumToKeep }},
+}
+
+const (
+	tagBuildDiscarderProp = "jenkins.model.BuildDiscarderProperty"
+	tagLegacyLogRotator   = "logRotator"
+	tagBogusBuildDiscard  = "buildDiscarder"
+	classLogRotator       = "hudson.tasks.LogRotator"
+)
+
+func (r BuildRetention) validate() error {
+	set := false
+	for _, f := range retentionFields {
+		v := *f.value(&r)
+		if v == nil {
+			continue
+		}
+		set = true
+		if *v != -1 && *v < 1 {
+			return fmt.Errorf("%s must be -1 (unlimited) or at least 1, got %d", f.tag, *v)
+		}
+	}
+	if !set {
+		return errors.New("needs at least one of daysToKeep, numToKeep, artifactDaysToKeep, artifactNumToKeep")
+	}
+	return nil
+}
+
+func buildDiscarderStrategy(root *etree.Element) *etree.Element {
+	if props := root.SelectElement("properties"); props != nil {
+		if prop := props.SelectElement(tagBuildDiscarderProp); prop != nil {
+			return prop.SelectElement("strategy")
+		}
+	}
+	return root.SelectElement(tagLegacyLogRotator)
+}
+
+func parseBuildRetention(x *xmlValues, root *etree.Element) (*BuildRetention, string) {
+	strat := buildDiscarderStrategy(root)
+	if strat == nil {
+		return nil, ""
+	}
+	if class := strat.SelectAttrValue("class", ""); class != classLogRotator {
+		return nil, class
+	}
+	var ret BuildRetention
+	for _, f := range retentionFields {
+		*f.value(&ret) = x.integer(strat, f.tag)
+	}
+	return &ret, ""
+}
+
+func mergeBuildRetention(root *etree.Element, patch BuildRetention) error {
+	strat := buildDiscarderStrategy(root)
+	if strat != nil {
+		if class := strat.SelectAttrValue("class", ""); class != classLogRotator {
+			return fmt.Errorf("patch.buildRetention: the job uses build discarder %s, which only %s settings can be written to; change it in Jenkins", orDefault(class, "(no class)"), classLogRotator)
+		}
+	}
+	props := root.SelectElement("properties")
+	if props == nil {
+		props = root.CreateElement("properties")
+	}
+	prop := props.SelectElement(tagBuildDiscarderProp)
+	if prop == nil {
+		prop = props.CreateElement(tagBuildDiscarderProp)
+	}
+	if strat == nil {
+		strat = prop.CreateElement("strategy")
+		strat.CreateAttr("class", classLogRotator)
+		for _, f := range retentionFields {
+			strat.CreateElement(f.tag).SetText("-1")
+		}
+	} else if strat.Parent() != prop {
+		strat.Parent().RemoveChild(strat)
+		strat.Tag = "strategy"
+		prop.AddChild(strat)
+	}
+	removeChild(root, tagLegacyLogRotator)
+	removeChild(root, tagBogusBuildDiscard)
+	for _, f := range retentionFields {
+		if v := *f.value(&patch); v != nil {
+			setChildText(strat, f.tag, strconv.Itoa(*v))
+		}
+	}
+	return nil
 }
 
 const (
@@ -276,20 +376,7 @@ func parseJobConfig(xml string) (*JobConfigView, error) {
 
 	cfg.Parameters = parseParameters(root)
 
-	if bd := root.SelectElement("buildDiscarder"); bd != nil {
-		if strat := bd.SelectElement("strategy"); strat != nil {
-			ret := BuildRetention{}
-			if n := x.integer(strat, "numToKeep"); n != nil && *n >= 0 {
-				ret.NumToKeep = n
-			}
-			if n := x.integer(strat, "daysToKeep"); n != nil && *n >= 0 {
-				ret.DaysToKeep = n
-			}
-			if ret.NumToKeep != nil || ret.DaysToKeep != nil {
-				cfg.BuildRetention = &ret
-			}
-		}
-	}
+	cfg.BuildRetention, cfg.OtherBuildDiscarder = parseBuildRetention(&x, root)
 
 	cfg.SCM = parseSCMs(root)
 	cfg.BuildRevision = buildRevisionSupport(&x, root, cfg.Disabled != nil && *cfg.Disabled, cfg.SCM)
@@ -591,6 +678,11 @@ func newJobPatch(cfg JobConfig) (jobPatch, error) {
 			return jobPatch{}, fmt.Errorf("patch.definition: %w", err)
 		}
 	}
+	if r := cfg.BuildRetention; r != nil {
+		if err := r.validate(); err != nil {
+			return jobPatch{}, fmt.Errorf("patch.buildRetention: %w", err)
+		}
+	}
 	return jobPatch{cfg: cfg}, nil
 }
 
@@ -749,22 +841,9 @@ func mergeJobConfig(xml string, jp jobPatch) (string, error) {
 	}
 
 	if patch.BuildRetention != nil {
-		removeChild(root, "buildDiscarder")
-		bd := root.CreateElement("buildDiscarder")
-		bd.CreateAttr("class", "hudson.tasks.LogRotator")
-		strat := bd.CreateElement("strategy")
-		strat.CreateAttr("class", "hudson.tasks.LogRotator")
-		num, days := -1, -1
-		if patch.BuildRetention.NumToKeep != nil {
-			num = *patch.BuildRetention.NumToKeep
+		if err := mergeBuildRetention(root, *patch.BuildRetention); err != nil {
+			return "", err
 		}
-		if patch.BuildRetention.DaysToKeep != nil {
-			days = *patch.BuildRetention.DaysToKeep
-		}
-		strat.CreateElement("daysToKeep").SetText(strconv.Itoa(days))
-		strat.CreateElement("numToKeep").SetText(strconv.Itoa(num))
-		strat.CreateElement("artifactDaysToKeep").SetText("-1")
-		strat.CreateElement("artifactNumToKeep").SetText("-1")
 	}
 
 	doc.Indent(2)

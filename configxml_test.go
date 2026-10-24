@@ -661,3 +661,38 @@ func TestBuildRetentionRejectsWhatItCannotWrite(t *testing.T) {
 		t.Errorf("malformed numToKeep: want error, got %v", err)
 	}
 }
+
+func TestConcurrentBuildsFollowTheJobType(t *testing.T) {
+	pipeline := pipelineWithTriggerProperty("")
+	cfg, err := parseJobConfig(pipeline)
+	if err != nil || cfg.ConcurrentBuilds == nil || !*cfg.ConcurrentBuilds {
+		t.Fatalf("pipeline without the property allows concurrent builds: %+v, %v", cfg.ConcurrentBuilds, err)
+	}
+	out, err := mergeJobConfig(pipeline, mustPatch(t, JobConfig{ConcurrentBuilds: ptr(false)}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "<"+tagDisableConcurrentProp) || strings.Contains(out, "<concurrentBuild>") {
+		t.Errorf("disabling concurrency on a pipeline must add DisableConcurrentBuildsJobProperty:\n%s", out)
+	}
+	if back, err := parseJobConfig(out); err != nil || *back.ConcurrentBuilds {
+		t.Errorf("after disabling: %+v, %v", back.ConcurrentBuilds, err)
+	}
+	again, err := mergeJobConfig(out, mustPatch(t, JobConfig{ConcurrentBuilds: ptr(true)}))
+	if err != nil || strings.Contains(again, tagDisableConcurrentProp) {
+		t.Errorf("enabling concurrency must remove the property: %v\n%s", err, again)
+	}
+
+	legacy := strings.Replace(pipeline, "<disabled>", "<concurrentBuild>false</concurrentBuild>\n  <disabled>", 1)
+	if cfg, err := parseJobConfig(legacy); err != nil || *cfg.ConcurrentBuilds {
+		t.Errorf("legacy pipeline concurrentBuild=false: %+v, %v", cfg.ConcurrentBuilds, err)
+	}
+
+	freestyle := freestyleXML(fmt.Sprintf(gitSCMXML, "**", ""), pollTrigger, false)
+	if cfg, err := parseJobConfig(freestyle); err != nil || cfg.ConcurrentBuilds == nil || *cfg.ConcurrentBuilds {
+		t.Errorf("freestyle without concurrentBuild runs one build at a time: %+v, %v", cfg.ConcurrentBuilds, err)
+	}
+	if out, err := mergeJobConfig(freestyle, mustPatch(t, JobConfig{ConcurrentBuilds: ptr(true)})); err != nil || !strings.Contains(out, "<concurrentBuild>true</concurrentBuild>") || strings.Contains(out, tagDisableConcurrentProp) {
+		t.Errorf("freestyle concurrency stays at the root: %v\n%s", err, out)
+	}
+}

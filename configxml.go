@@ -216,6 +216,49 @@ func (r BuildRetention) validate() error {
 	return nil
 }
 
+const tagDisableConcurrentProp = "org.jenkinsci.plugins.workflow.job.properties.DisableConcurrentBuildsJobProperty"
+
+func concurrentBuilds(x *xmlValues, jobType string, root *etree.Element) *bool {
+	switch jobType {
+	case "freestyle":
+		if v := x.boolean(root, "concurrentBuild"); v != nil {
+			return v
+		}
+		allowed := false
+		return &allowed
+	case "pipeline":
+		allowed := true
+		if props := root.SelectElement("properties"); props != nil && props.SelectElement(tagDisableConcurrentProp) != nil {
+			allowed = false
+		} else if legacy := x.boolean(root, "concurrentBuild"); legacy != nil {
+			allowed = *legacy
+		}
+		return &allowed
+	}
+	return nil
+}
+
+func mergeConcurrentBuilds(jobType string, root *etree.Element, allowed bool) {
+	if jobType != "pipeline" {
+		setChildText(root, "concurrentBuild", strconv.FormatBool(allowed))
+		return
+	}
+	removeChild(root, "concurrentBuild")
+	props := root.SelectElement("properties")
+	if allowed {
+		if props != nil {
+			removeChild(props, tagDisableConcurrentProp)
+		}
+		return
+	}
+	if props == nil {
+		props = root.CreateElement("properties")
+	}
+	if props.SelectElement(tagDisableConcurrentProp) == nil {
+		props.CreateElement(tagDisableConcurrentProp)
+	}
+}
+
 func buildDiscarderStrategy(root *etree.Element) *etree.Element {
 	if props := root.SelectElement("properties"); props != nil {
 		if prop := props.SelectElement(tagBuildDiscarderProp); prop != nil {
@@ -337,7 +380,7 @@ func parseJobConfig(xml string) (*JobConfigView, error) {
 		cfg.Description = &d
 	}
 	cfg.Disabled = x.boolean(root, "disabled")
-	cfg.ConcurrentBuilds = x.boolean(root, "concurrentBuild")
+	cfg.ConcurrentBuilds = concurrentBuilds(&x, cfg.Type, root)
 
 	if cfg.Type == "pipeline" {
 		defn := root.SelectElement("definition")
@@ -781,7 +824,7 @@ func mergeJobConfig(xml string, jp jobPatch) (string, error) {
 		setChildText(root, "disabled", strconv.FormatBool(*patch.Disabled))
 	}
 	if patch.ConcurrentBuilds != nil {
-		setChildText(root, "concurrentBuild", strconv.FormatBool(*patch.ConcurrentBuilds))
+		mergeConcurrentBuilds(jobTypeFromTag(root.Tag), root, *patch.ConcurrentBuilds)
 	}
 
 	if patch.Definition != nil {

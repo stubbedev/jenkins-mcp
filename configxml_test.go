@@ -555,3 +555,15 @@ func TestMergeChoiceParameterHasNoDefaultValue(t *testing.T) {
 		t.Errorf("choice parameters must not get a defaultValue element Jenkins ignores:\n%s", out)
 	}
 }
+
+func TestParseJobConfigRejectsMalformedValues(t *testing.T) {
+	cases := map[string]string{
+		strings.Replace(freestyleXML(fmt.Sprintf(gitSCMXML, "**", ""), pollTrigger, false), "<disabled>false</disabled>", "<disabled>yes</disabled>", 1):       `config.xml /project/disabled must be true or false, got "yes"`,
+		strings.Replace(freestyleXML(fmt.Sprintf(gitSCMXML, "**", ""), pollTrigger, false), "<ignorePostCommitHooks>false", "<ignorePostCommitHooks>False", 1): `/project/triggers/hudson.triggers.SCMTrigger/ignorePostCommitHooks must be true or false, got "False"`,
+	}
+	for xml, want := range cases {
+		if _, err := parseJobConfig(xml); err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("want error containing %q, got %v", want, err)
+		}
+	}
+}

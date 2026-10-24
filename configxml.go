@@ -231,16 +231,13 @@ func parseJobConfig(xml string) (*JobConfigView, error) {
 		return nil, errEmptyConfig
 	}
 	cfg := &JobConfigView{Type: jobTypeFromTag(root.Tag)}
+	var x xmlValues
 
 	if d := childText(root, "description"); d != "" {
 		cfg.Description = &d
 	}
-	if b, ok := childBool(root, "disabled"); ok {
-		cfg.Disabled = &b
-	}
-	if b, ok := childBool(root, "concurrentBuild"); ok {
-		cfg.ConcurrentBuilds = &b
-	}
+	cfg.Disabled = x.boolean(root, "disabled")
+	cfg.ConcurrentBuilds = x.boolean(root, "concurrentBuild")
 
 	if cfg.Type == "pipeline" {
 		defn := root.SelectElement("definition")
@@ -248,14 +245,12 @@ func parseJobConfig(xml string) (*JobConfigView, error) {
 		case definitionInline:
 			script := childText(defn, "script")
 			def := &PipelineDef{Type: definitionInline, Script: &script}
-			if b, ok := childBool(defn, "sandbox"); ok {
-				def.Sandbox = &b
-			}
+			def.Sandbox = x.boolean(defn, "sandbox")
 			cfg.Definition = def
 		case definitionSCM:
 			lightweight := true
-			if b, ok := childBool(defn, "lightweight"); ok {
-				lightweight = b
+			if b := x.boolean(defn, "lightweight"); b != nil {
+				lightweight = *b
 			}
 			scriptPath := childText(defn, "scriptPath")
 			if scriptPath == "" {
@@ -271,8 +266,8 @@ func parseJobConfig(xml string) (*JobConfigView, error) {
 			case tagTimerTrigger:
 				cfg.Triggers = append(cfg.Triggers, Trigger{Type: triggerCron, Spec: strings.TrimSpace(childText(t, "spec"))})
 			case tagSCMTrigger:
-				ignore, _ := childBool(t, "ignorePostCommitHooks")
-				cfg.Triggers = append(cfg.Triggers, Trigger{Type: triggerSCMPoll, Spec: strings.TrimSpace(childText(t, "spec")), IgnorePostCommitHooks: ignore})
+				ignore := x.boolean(t, "ignorePostCommitHooks")
+				cfg.Triggers = append(cfg.Triggers, Trigger{Type: triggerSCMPoll, Spec: strings.TrimSpace(childText(t, "spec")), IgnorePostCommitHooks: ignore != nil && *ignore})
 			default:
 				cfg.OtherTriggers = append(cfg.OtherTriggers, t.Tag)
 			}
@@ -284,11 +279,11 @@ func parseJobConfig(xml string) (*JobConfigView, error) {
 	if bd := root.SelectElement("buildDiscarder"); bd != nil {
 		if strat := bd.SelectElement("strategy"); strat != nil {
 			ret := BuildRetention{}
-			if n, ok := childInt(strat, "numToKeep"); ok && n >= 0 {
-				ret.NumToKeep = &n
+			if n := x.integer(strat, "numToKeep"); n != nil && *n >= 0 {
+				ret.NumToKeep = n
 			}
-			if n, ok := childInt(strat, "daysToKeep"); ok && n >= 0 {
-				ret.DaysToKeep = &n
+			if n := x.integer(strat, "daysToKeep"); n != nil && *n >= 0 {
+				ret.DaysToKeep = n
 			}
 			if ret.NumToKeep != nil || ret.DaysToKeep != nil {
 				cfg.BuildRetention = &ret
@@ -297,7 +292,10 @@ func parseJobConfig(xml string) (*JobConfigView, error) {
 	}
 
 	cfg.SCM = parseSCMs(root)
-	cfg.BuildRevision = buildRevisionSupport(root, cfg.Disabled != nil && *cfg.Disabled, cfg.SCM)
+	cfg.BuildRevision = buildRevisionSupport(&x, root, cfg.Disabled != nil && *cfg.Disabled, cfg.SCM)
+	if x.err != nil {
+		return nil, x.err
+	}
 	return cfg, nil
 }
 
@@ -450,7 +448,7 @@ func scmTriggers(root *etree.Element) []*etree.Element {
 	return out
 }
 
-func buildRevisionSupport(root *etree.Element, disabled bool, scms []SCMConfig) BuildRevisionSupport {
+func buildRevisionSupport(x *xmlValues, root *etree.Element, disabled bool, scms []SCMConfig) BuildRevisionSupport {
 	notTriggered := func(reason string) BuildRevisionSupport {
 		return BuildRevisionSupport{Mode: buildRevisionNotTriggered, Reason: reason}
 	}
@@ -480,7 +478,7 @@ func buildRevisionSupport(root *etree.Element, disabled bool, scms []SCMConfig) 
 	}
 	reacting := false
 	for _, t := range triggers {
-		if ignore, _ := childBool(t, "ignorePostCommitHooks"); !ignore {
+		if ignore := x.boolean(t, "ignorePostCommitHooks"); ignore == nil || !*ignore {
 			reacting = true
 		}
 	}
@@ -849,24 +847,44 @@ func childText(e *etree.Element, tag string) string {
 	return ""
 }
 
-func childBool(e *etree.Element, tag string) (bool, bool) {
-	c := e.SelectElement(tag)
-	if c == nil {
-		return false, false
-	}
-	return strings.EqualFold(strings.TrimSpace(c.Text()), "true"), true
+type xmlValues struct {
+	err error
 }
 
-func childInt(e *etree.Element, tag string) (int, bool) {
+func (x *xmlValues) fail(err error) {
+	if x.err == nil {
+		x.err = err
+	}
+}
+
+func (x *xmlValues) boolean(e *etree.Element, tag string) *bool {
 	c := e.SelectElement(tag)
 	if c == nil {
-		return 0, false
+		return nil
+	}
+	var b bool
+	switch v := strings.TrimSpace(c.Text()); v {
+	case "true":
+		b = true
+	case "false":
+	default:
+		x.fail(fmt.Errorf("config.xml %s must be true or false, got %q", c.GetPath(), v))
+		return nil
+	}
+	return &b
+}
+
+func (x *xmlValues) integer(e *etree.Element, tag string) *int {
+	c := e.SelectElement(tag)
+	if c == nil {
+		return nil
 	}
 	n, err := strconv.Atoi(strings.TrimSpace(c.Text()))
 	if err != nil {
-		return 0, false
+		x.fail(fmt.Errorf("config.xml %s must be an integer, got %q", c.GetPath(), strings.TrimSpace(c.Text())))
+		return nil
 	}
-	return n, true
+	return &n
 }
 
 func setChildText(e *etree.Element, tag, value string) {

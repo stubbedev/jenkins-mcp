@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -244,5 +245,26 @@ func TestUpdateJobConfigRejectsBadFormatBeforeWriting(t *testing.T) {
 	}
 	if !res.IsError || !strings.Contains(resultText(res), `format must be one of ["toon","json"], got "yaml"`) {
 		t.Errorf("want a format error, got %q", resultText(res))
+	}
+}
+
+func TestJobPathResolutionExplainsWhyNothingMatched(t *testing.T) {
+	dir := t.TempDir()
+	ctx := withCwd(context.Background(), dir)
+	for _, args := range [][]string{{"init", "-q"}, {"remote", "add", "origin", "git@host:team/unmapped.git"}} {
+		if _, err := runGit(ctx, args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	saved := jenkins
+	jenkins = NewJenkinsClient(Config{URL: "http://127.0.0.1:1", Username: "u", Token: "t", RepoJobMap: map[string][]string{"team/mapped": {"mapped-job"}}})
+	t.Cleanup(func() { jenkins = saved })
+
+	res, err := connectTest(t).CallTool(context.Background(), &mcp.CallToolParams{Name: "jenkins_list_builds", Arguments: map[string]any{"cwd": dir}})
+	if err != nil {
+		t.Fatalf("CallTool: %v", err)
+	}
+	if want := "the origin remote git@host:team/unmapped.git of working directory " + strconv.Quote(dir) + " matches no repoJobMap entry"; !res.IsError || !strings.Contains(resultText(res), want) {
+		t.Errorf("want %q, got %q", want, resultText(res))
 	}
 }

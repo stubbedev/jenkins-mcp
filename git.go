@@ -1,7 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -37,25 +40,46 @@ func cwdFromContext(ctx context.Context) string {
 	return ""
 }
 
-// safeGit runs git with the given args, returning trimmed stdout, or "" on any
-// error (stderr is discarded). When the context carries a cwd, git runs there
-// (git -C <cwd>); otherwise it runs in the server's current working directory.
-func safeGit(ctx context.Context, args ...string) string {
+type gitError struct {
+	args   []string
+	stderr string
+	err    error
+}
+
+func (e *gitError) Error() string {
+	msg := "git " + strings.Join(e.args, " ")
+	if e.stderr != "" {
+		return msg + ": " + e.stderr
+	}
+	return msg + ": " + e.err.Error()
+}
+
+func (e *gitError) Unwrap() error { return e.err }
+
+func runGit(ctx context.Context, args ...string) (string, error) {
+	full := args
 	if dir := cwdFromContext(ctx); dir != "" {
-		args = append([]string{"-C", dir}, args...)
+		full = append([]string{"-C", dir}, args...)
 	}
 	cctx, cancel := context.WithTimeout(ctx, gitTimeout)
 	defer cancel()
-	// GIT_TERMINAL_PROMPT=0 makes git fail fast instead of blocking on an
-	// interactive credential/host prompt — belt-and-suspenders with the timeout.
-	cmd := exec.CommandContext(cctx, "git", args...)
-	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
-	cmd.Stderr = nil
+	cmd := exec.CommandContext(cctx, "git", full...)
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "LC_ALL=C")
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
 	out, err := cmd.Output()
 	if err != nil {
-		return ""
+		if cctx.Err() != nil {
+			err = fmt.Errorf("timed out after %s: %w", gitTimeout, cctx.Err())
+		}
+		return "", &gitError{args: full, stderr: strings.TrimSpace(stderr.String()), err: err}
 	}
-	return strings.TrimSpace(string(out))
+	return strings.TrimSpace(string(out)), nil
+}
+
+func isNotARepo(err error) bool {
+	var ge *gitError
+	return errors.As(err, &ge) && strings.Contains(ge.stderr, "not a git repository")
 }
 
 // isRepoDir reports whether dir is an absolute path to an existing directory —
@@ -70,13 +94,25 @@ func isRepoDir(dir string) bool {
 	return err == nil && info.IsDir()
 }
 
-func currentGitRemote(ctx context.Context) string {
-	return safeGit(ctx, "remote", "get-url", "origin")
+func currentGitRemote(ctx context.Context) (string, error) {
+	remote, err := runGit(ctx, "remote", "get-url", "origin")
+	var ge *gitError
+	switch {
+	case err == nil:
+		return remote, nil
+	case isNotARepo(err), errors.As(err, &ge) && strings.Contains(ge.stderr, "No such remote"):
+		return "", nil
+	}
+	return "", err
 }
-func currentGitBranch(ctx context.Context) string {
-	return safeGit(ctx, "rev-parse", "--abbrev-ref", "HEAD")
+
+func currentGitBranch(ctx context.Context) (string, error) {
+	return runGit(ctx, "rev-parse", "--abbrev-ref", "HEAD")
 }
-func currentGitSha(ctx context.Context) string { return safeGit(ctx, "rev-parse", "HEAD") }
+
+func currentGitSha(ctx context.Context) (string, error) {
+	return runGit(ctx, "rev-parse", "HEAD")
+}
 
 // logErr writes a line to stderr (stdout is reserved for the MCP stdio stream).
 func logErr(msg string) { os.Stderr.WriteString(msg + "\n") }

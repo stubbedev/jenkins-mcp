@@ -252,7 +252,11 @@ func runTool(ctx context.Context, name string, args toolArgs) (string, error) {
 		return jenkins.triggerBuildTool(ctx, jobPath, stringValues(args.object("parameters")))
 
 	case "jenkins_build_revision":
-		rev, err := resolveRevision(revisionWorkTree(ctx), args.str("url"), args.str("branch"), args.str("sha"))
+		workTree, err := revisionWorkTree(ctx)
+		if err != nil {
+			return "", err
+		}
+		rev, err := resolveRevision(workTree, args.str("url"), args.str("branch"), args.str("sha"))
 		if err != nil {
 			return "", err
 		}
@@ -305,8 +309,6 @@ func resolveJobPath(ctx context.Context, arg string) (string, error) {
 	switch len(matches) {
 	case 1:
 		return matches[0], nil
-	case 0:
-		return "", fmt.Errorf("jobPath is required (no entry in repoJobMap matches the working tree's git remote)")
 	default:
 		if picked, ok := elicitJobPath(ctx, matches); ok {
 			return picked, nil
@@ -323,61 +325,84 @@ func resolveJobPath(ctx context.Context, arg string) (string, error) {
 // without the caller disambiguating; if several roots map to different jobs the
 // union is returned for elicitation.
 func resolveJobMatches(ctx context.Context) ([]string, error) {
-	// Explicit working directory (arg or header).
 	if dir := cwdFromContext(ctx); dir != "" {
 		if !isRepoDir(dir) {
 			return nil, fmt.Errorf("working directory %q is not an absolute, existing directory — pass jobPath explicitly, or a valid cwd/repoRoot", dir)
 		}
-		remote := currentGitRemote(ctx)
-		if remote == "" {
-			return nil, fmt.Errorf("jobPath is required: ran git in %q but found no 'origin' remote (not a git repo, or no origin configured)", dir)
-		}
-		return jenkins.resolveJobsForRemote(remote), nil
+		return matchesForWorkTree(ctx, fmt.Sprintf("working directory %q", dir))
 	}
 
-	// Otherwise, the workspace roots the client advertised.
 	roots := rootsForSession(ctx)
 	if len(roots) == 0 {
-		// No advertised roots: fall back to git in the server's own cwd. This is
-		// the stdio case, where the process runs inside the user's repo.
-		remote := currentGitRemote(ctx)
-		if remote == "" {
-			return nil, fmt.Errorf("jobPath is required (no working tree to resolve it from — pass jobPath, a cwd/repoRoot argument, or send an X-Repo-Root header)")
-		}
-		return jenkins.resolveJobsForRemote(remote), nil
+		return matchesForWorkTree(ctx, "the server's working directory")
 	}
 
-	// One or more roots: union the matches across every valid root.
 	seen := map[string]bool{}
-	var matches []string
+	var matches, notes []string
 	for _, root := range roots {
 		if !isRepoDir(root) {
+			notes = append(notes, fmt.Sprintf("root %q is not a local directory", root))
 			continue
 		}
-		remote := currentGitRemote(withCwd(ctx, root))
-		if remote == "" {
+		found, err := matchesForWorkTree(withCwd(ctx, root), fmt.Sprintf("root %q", root))
+		if err != nil {
+			var none noJobForWorkTree
+			if !errors.As(err, &none) {
+				return nil, err
+			}
+			notes = append(notes, none.reason)
 			continue
 		}
-		for _, m := range jenkins.resolveJobsForRemote(remote) {
+		for _, m := range found {
 			if !seen[m] {
 				seen[m] = true
 				matches = append(matches, m)
 			}
 		}
 	}
+	if len(matches) == 0 {
+		return nil, fmt.Errorf("jobPath is required: no workspace root maps to a Jenkins job (%s)", strings.Join(notes, "; "))
+	}
 	return matches, nil
 }
 
-func revisionWorkTree(ctx context.Context) context.Context {
+type noJobForWorkTree struct{ reason string }
+
+func (e noJobForWorkTree) Error() string { return "jobPath is required: " + e.reason }
+
+func matchesForWorkTree(ctx context.Context, where string) ([]string, error) {
+	remote, err := currentGitRemote(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("resolving jobPath from %s: %w", where, err)
+	}
+	if remote == "" {
+		return nil, noJobForWorkTree{fmt.Sprintf("%s is not a git repository with an 'origin' remote", where)}
+	}
+	matches := jenkins.resolveJobsForRemote(remote)
+	if len(matches) == 0 {
+		return nil, noJobForWorkTree{fmt.Sprintf("the origin remote %s of %s matches no repoJobMap entry", remote, where)}
+	}
+	return matches, nil
+}
+
+func revisionWorkTree(ctx context.Context) (context.Context, error) {
 	if cwdFromContext(ctx) != "" {
-		return ctx
+		return ctx, nil
 	}
 	for _, root := range rootsForSession(ctx) {
-		if isRepoDir(root) && currentGitRemote(withCwd(ctx, root)) != "" {
-			return withCwd(ctx, root)
+		if !isRepoDir(root) {
+			continue
+		}
+		rootCtx := withCwd(ctx, root)
+		remote, err := currentGitRemote(rootCtx)
+		if err != nil {
+			return nil, fmt.Errorf("inspecting workspace root %q: %w", root, err)
+		}
+		if remote != "" {
+			return rootCtx, nil
 		}
 	}
-	return ctx
+	return ctx, nil
 }
 
 var fullSHA = regexp.MustCompile(`^[0-9a-fA-F]{40}$`)
@@ -387,24 +412,36 @@ func resolveRevision(ctx context.Context, remote, branch, rev string) (gitRevisi
 		return gitRevision{}, fmt.Errorf("working directory %q is not an absolute, existing directory — pass url and a full sha, or a valid cwd/repoRoot", dir)
 	}
 	if remote == "" {
-		if remote = currentGitRemote(ctx); remote == "" {
+		origin, err := currentGitRemote(ctx)
+		if err != nil {
+			return gitRevision{}, fmt.Errorf("resolving url from the working tree: %w", err)
+		}
+		if origin == "" {
 			return gitRevision{}, fmt.Errorf("url is required (no 'origin' remote in the working tree — pass url, or a cwd/repoRoot argument)")
 		}
+		remote = origin
 	}
 	if rev == "" {
 		rev = "HEAD"
 		if branch == "" {
-			if b := currentGitBranch(ctx); b != "HEAD" {
-				branch = b
+			current, err := currentGitBranch(ctx)
+			if err != nil {
+				return gitRevision{}, fmt.Errorf("resolving the current branch: %w", err)
+			}
+			if current != "HEAD" {
+				branch = current
 			}
 		}
 	}
 	if fullSHA.MatchString(rev) {
 		return gitRevision{remote: remote, branch: branch, sha: strings.ToLower(rev)}, nil
 	}
-	sha := safeGit(ctx, "rev-parse", "--verify", "--end-of-options", rev+"^{commit}")
+	sha, err := runGit(ctx, "rev-parse", "--verify", "--end-of-options", rev+"^{commit}")
+	if err != nil {
+		return gitRevision{}, fmt.Errorf("cannot resolve %q to a commit in the working tree — pass the full 40-character sha: %w", rev, err)
+	}
 	if !fullSHA.MatchString(sha) {
-		return gitRevision{}, fmt.Errorf("cannot resolve %q to a commit in the working tree — pass the full 40-character sha", rev)
+		return gitRevision{}, fmt.Errorf("git rev-parse resolved %q to %q, which is not a full SHA", rev, sha)
 	}
 	return gitRevision{remote: remote, branch: branch, sha: sha}, nil
 }
@@ -539,19 +576,23 @@ func buildInstructions(config *Config, httpMode bool) string {
 	}
 
 	ctx := context.Background()
-	remote := currentGitRemote(ctx)
+	remote, err := currentGitRemote(ctx)
+	if err != nil {
+		l.blank()
+		l.add("## Current repo")
+		l.add("- Could not inspect the working tree: %v", err)
+	}
 	if remote != "" {
-		branch := currentGitBranch(ctx)
-		sha := currentGitSha(ctx)
 		l.blank()
 		l.add("## Current repo")
 		l.add("- Remote: %s", remote)
-		if branch != "" {
-			if sha != "" {
-				l.add("- Branch: %s @ %s", branch, sha[:min(8, len(sha))])
-			} else {
-				l.add("- Branch: %s", branch)
-			}
+		branch, err := currentGitBranch(ctx)
+		if err != nil {
+			l.add("- Branch: unknown (%v)", err)
+		} else if sha, err := currentGitSha(ctx); err != nil {
+			l.add("- Branch: %s (no commit: %v)", branch, err)
+		} else {
+			l.add("- Branch: %s @ %s", branch, sha[:min(8, len(sha))])
 		}
 		matches := jenkins.resolveJobsForRemote(remote)
 		switch {

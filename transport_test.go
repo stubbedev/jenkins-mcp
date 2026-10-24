@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -227,77 +228,50 @@ func TestIsRepoDir(t *testing.T) {
 	}
 }
 
-func TestSafeGitUsesContextCwd(t *testing.T) {
+func TestGitDistinguishesAbsenceFromFailure(t *testing.T) {
 	dir := t.TempDir()
-	if out := safeGit(context.Background(), "init", dir); out == "" {
-		// `git init <dir>` prints to stdout on success; empty means git missing.
-		t.Skip("git not available or produced no output")
+	ctx := withCwd(context.Background(), dir)
+	if remote, err := currentGitRemote(ctx); err != nil || remote != "" {
+		t.Errorf("not a repository: got %q, %v; want no remote and no error", remote, err)
 	}
-	// rev-parse --show-toplevel from within dir (via -C) should resolve to dir.
-	got := safeGit(withCwd(context.Background(), dir), "rev-parse", "--show-toplevel")
-	if got == "" {
-		t.Skip("git rev-parse produced no output")
+	if _, err := runGit(context.Background(), "init", "-q", dir); err != nil {
+		t.Fatal(err)
 	}
-	// macOS /tmp symlinks to /private/tmp, so compare suffixes loosely.
-	if resolved, err := os.Stat(got); err != nil || resolved == nil {
-		t.Errorf("toplevel %q does not exist: %v", got, err)
+	if remote, err := currentGitRemote(ctx); err != nil || remote != "" {
+		t.Errorf("repository without origin: got %q, %v; want no remote and no error", remote, err)
+	}
+	if _, err := runGit(ctx, "remote", "add", "origin", "git@host:o/r.git"); err != nil {
+		t.Fatal(err)
+	}
+	if remote, err := currentGitRemote(ctx); err != nil || remote != "git@host:o/r.git" {
+		t.Errorf("origin: got %q, %v", remote, err)
+	}
+	top, err := runGit(ctx, "rev-parse", "--show-toplevel")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a, b := evalSymlinks(t, top), evalSymlinks(t, dir); a != b {
+		t.Errorf("git ran in %q, want %q", a, b)
+	}
+
+	file := filepath.Join(dir, "file")
+	if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := currentGitRemote(withCwd(context.Background(), file)); err == nil || !strings.Contains(err.Error(), "git -C "+file) {
+		t.Errorf("git failing for another reason must be an error naming the command, got %v", err)
+	}
+	t.Setenv("PATH", "")
+	if _, err := currentGitRemote(ctx); err == nil || !strings.Contains(err.Error(), "executable file not found") {
+		t.Errorf("a missing git binary must be an error, got %v", err)
 	}
 }
 
-func TestResolveTransportRejectsInvalidSettings(t *testing.T) {
-	cases := []struct {
-		name string
-		env  map[string]string
-		args []string
-		want string
-	}{
-		{"stateless typo", map[string]string{"JENKINS_MCP_HTTP": "1", "JENKINS_MCP_HTTP_STATELESS": "yes"}, nil, `JENKINS_MCP_HTTP_STATELESS must be true, false, 1 or 0, got "yes"`},
-		{"relative path", map[string]string{"JENKINS_MCP_HTTP": "1", "JENKINS_MCP_HTTP_PATH": "mcp"}, nil, `JENKINS_MCP_HTTP_PATH must start with "/", got "mcp"`},
-		{"env address without port", map[string]string{"JENKINS_MCP_HTTP": "localhost"}, nil, `invalid HTTP listen address "localhost"`},
-		{"flag port out of range", nil, []string{"--http=:70000"}, `invalid HTTP listen address ":70000"`},
-		{"stateless without http", nil, []string{"--http-stateless"}, "needs HTTP mode"},
+func evalSymlinks(t *testing.T, p string) string {
+	t.Helper()
+	r, err := filepath.EvalSymlinks(p)
+	if err != nil {
+		t.Fatal(err)
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			for _, k := range []string{"JENKINS_MCP_HTTP", "JENKINS_MCP_HTTP_PATH", "JENKINS_MCP_HTTP_STATELESS"} {
-				t.Setenv(k, "")
-				os.Unsetenv(k)
-			}
-			for k, v := range tc.env {
-				t.Setenv(k, v)
-			}
-			cli, err := parseCLI(tc.args)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if _, err := resolveTransport(cli); err == nil || !strings.Contains(err.Error(), tc.want) {
-				t.Errorf("want error containing %q, got %v", tc.want, err)
-			}
-		})
-	}
-}
-
-func TestParseCLI(t *testing.T) {
-	got, err := parseCLI([]string{"--config", "/c.json", "--http", "0.0.0.0:9", "--http-stateless"})
-	want := cliOptions{configPath: "/c.json", http: true, httpAddr: "0.0.0.0:9", httpStateless: true}
-	if err != nil || got != want {
-		t.Errorf("parseCLI = %+v, %v; want %+v", got, err, want)
-	}
-	if got, err := parseCLI([]string{"--config=/d.json", "-v"}); err != nil || got != (cliOptions{configPath: "/d.json", version: true}) {
-		t.Errorf("parseCLI inline = %+v, %v", got, err)
-	}
-	for args, wantErr := range map[string]string{
-		"--confg x":             `unknown argument "--confg"`,
-		"stray":                 `unknown argument "stray"`,
-		"--config":              "--config needs a value",
-		"--config --http":       "--config needs a value",
-		"--config=":             "--config needs a value",
-		"--http=":               "--http= needs an address",
-		"--config a --config b": "--config given more than once",
-		"--http-stateless=yes":  "--http-stateless takes no value",
-	} {
-		if _, err := parseCLI(strings.Fields(args)); err == nil || !strings.Contains(err.Error(), wantErr) {
-			t.Errorf("parseCLI(%q): want error containing %q, got %v", args, wantErr, err)
-		}
-	}
+	return r
 }

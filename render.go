@@ -3,66 +3,78 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 
 	toon "github.com/toon-format/toon-go"
 )
 
-// defaultFormat is the process-wide output format for structured (JSON-shaped)
-// tool results, set once from JENKINS_MCP_FORMAT at startup. "toon" or "json".
-var defaultFormat = "toon"
+type outputFormat string
 
-// pickFormat resolves the output format for a single call: a per-call `format`
-// arg wins, otherwise the process default. Unknown values fall back to default.
-func pickFormat(args map[string]any) string {
-	if f, ok := args["format"].(string); ok {
-		switch f {
-		case "toon", "json":
-			return f
-		}
+const (
+	formatTOON outputFormat = "toon"
+	formatJSON outputFormat = "json"
+)
+
+var defaultFormat = formatTOON
+
+func parseOutputFormat(s string) (outputFormat, error) {
+	switch f := outputFormat(s); f {
+	case formatTOON, formatJSON:
+		return f, nil
 	}
-	return defaultFormat
+	return "", fmt.Errorf("format must be %q or %q, got %q", formatTOON, formatJSON, s)
 }
 
-// renderStructured serializes v as TOON (token-efficient, default) or pretty
-// JSON. v is first normalized to plain maps/slices via a JSON round-trip so the
-// TOON encoder sees only basic types and key order is deterministic. On any
-// TOON error it falls back to pretty JSON.
-func renderStructured(v any, format string) string {
-	normalized := toPlain(v)
-	if format == "json" {
-		return marshalIndent(normalized)
+func pickFormat(args map[string]any) (outputFormat, error) {
+	v, ok := args["format"]
+	if !ok || v == nil {
+		return defaultFormat, nil
 	}
-	s, err := toon.MarshalString(normalized)
+	s, ok := v.(string)
+	if !ok {
+		shown, _ := json.Marshal(v)
+		return "", fmt.Errorf("format must be a string, got %s", shown)
+	}
+	return parseOutputFormat(s)
+}
+
+func renderStructured(v any, format outputFormat) (string, error) {
+	normalized, err := toPlain(v)
 	if err != nil {
-		return marshalIndent(normalized)
+		return "", err
 	}
-	return s
+	switch format {
+	case formatJSON:
+		return marshalIndent(normalized)
+	case formatTOON:
+		s, err := toon.MarshalString(normalized)
+		if err != nil {
+			return "", fmt.Errorf("rendering result as TOON: %w", err)
+		}
+		return s, nil
+	}
+	return "", fmt.Errorf("rendering result: unknown format %q", format)
 }
 
-// toPlain converts an arbitrary value into plain interface{} types (map, slice,
-// string, float64, bool, nil) by round-tripping through JSON, honoring the
-// struct's omitempty tags so empty fields are dropped.
-func toPlain(v any) any {
+func toPlain(v any) (any, error) {
 	b, err := json.Marshal(v)
 	if err != nil {
-		return v
+		return nil, fmt.Errorf("encoding result as JSON: %w", err)
 	}
 	var out any
 	if err := json.Unmarshal(b, &out); err != nil {
-		return v
+		return nil, fmt.Errorf("decoding result JSON: %w", err)
 	}
-	return out
+	return out, nil
 }
 
-// marshalIndent pretty-prints JSON with 2-space indent and without HTML
-// escaping, matching JSON.stringify(obj, null, 2).
-func marshalIndent(v any) string {
+func marshalIndent(v any) (string, error) {
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)
 	enc.SetEscapeHTML(false)
 	enc.SetIndent("", "  ")
 	if err := enc.Encode(v); err != nil {
-		return "{}"
+		return "", fmt.Errorf("rendering result as JSON: %w", err)
 	}
-	return string(bytes.TrimRight(buf.Bytes(), "\n"))
+	return string(bytes.TrimRight(buf.Bytes(), "\n")), nil
 }

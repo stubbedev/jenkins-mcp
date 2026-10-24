@@ -225,3 +225,24 @@ func TestCallToolRejectsNonNumericLimit(t *testing.T) {
 		t.Errorf("want an error naming limit and the value, got %q", resultText(res))
 	}
 }
+
+func TestUpdateJobConfigRejectsBadFormatBeforeWriting(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("Jenkins must not be contacted for an invalid format, got %s %s", r.Method, r.URL)
+	}))
+	t.Cleanup(srv.Close)
+	saved := jenkins
+	jenkins = NewJenkinsClient(Config{URL: srv.URL, Username: "u", Token: "t"})
+	t.Cleanup(func() { jenkins = saved })
+
+	res, err := connectTest(t).CallTool(context.Background(), &mcp.CallToolParams{
+		Name:      "jenkins_update_job_config",
+		Arguments: map[string]any{"jobPath": "demo", "format": "yaml", "patch": map[string]any{"description": "d"}},
+	})
+	if err != nil {
+		t.Fatalf("CallTool: %v", err)
+	}
+	if !res.IsError || !strings.Contains(resultText(res), `format must be "toon" or "json", got "yaml"`) {
+		t.Errorf("want a format error, got %q", resultText(res))
+	}
+}

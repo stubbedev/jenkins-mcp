@@ -165,7 +165,10 @@ func TestParseFreestyleGitSCM(t *testing.T) {
 		t.Errorf("buildRevision = %+v, want pinsCommit", cfg.BuildRevision)
 	}
 	for _, format := range []string{"json", "toon"} {
-		out := renderStructured(cfg, format)
+		out, err := renderStructured(cfg, outputFormat(format))
+		if err != nil {
+			t.Fatal(err)
+		}
 		if strings.Contains(out, "s3cret") {
 			t.Errorf("%s output leaks the remote password:\n%s", format, out)
 		}

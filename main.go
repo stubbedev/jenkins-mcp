@@ -26,7 +26,12 @@ func main() {
 		}
 	}
 
-	if f := strings.ToLower(os.Getenv("JENKINS_MCP_FORMAT")); f == "json" || f == "toon" {
+	if env := os.Getenv("JENKINS_MCP_FORMAT"); env != "" {
+		f, err := parseOutputFormat(strings.ToLower(env))
+		if err != nil {
+			logErr("[jenkins-mcp] JENKINS_MCP_FORMAT: " + err.Error())
+			os.Exit(1)
+		}
 		defaultFormat = f
 	}
 
@@ -260,13 +265,21 @@ func runTool(ctx context.Context, name string, args map[string]any) (string, err
 		return jenkins.buildRevisionTool(ctx, rev)
 
 	case "jenkins_get_job_config":
+		format, err := pickFormat(args)
+		if err != nil {
+			return "", err
+		}
 		jobPath, err := resolveJobPath(ctx, argString(args, "jobPath"))
 		if err != nil {
 			return "", err
 		}
-		return jenkins.getJobConfigTool(ctx, jobPath, pickFormat(args))
+		return jenkins.getJobConfigTool(ctx, jobPath, format)
 
 	case "jenkins_update_job_config":
+		format, err := pickFormat(args)
+		if err != nil {
+			return "", err
+		}
 		patch, err := parsePatch(args["patch"])
 		if err != nil {
 			return "", err
@@ -275,7 +288,7 @@ func runTool(ctx context.Context, name string, args map[string]any) (string, err
 		if err != nil {
 			return "", err
 		}
-		return jenkins.updateJobConfigTool(ctx, jobPath, patch, pickFormat(args))
+		return jenkins.updateJobConfigTool(ctx, jobPath, patch, format)
 
 	default:
 		return "", fmt.Errorf("unknown tool: %s", name)

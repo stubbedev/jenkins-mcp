@@ -1013,7 +1013,7 @@ func (c *JenkinsClient) notifyCommitError(err error) error {
 	return fmt.Errorf("GET /git/notifyCommit: %w", err)
 }
 
-func (c *JenkinsClient) getJobConfigTool(ctx context.Context, jobPath, format string) (string, error) {
+func (c *JenkinsClient) getJobConfigTool(ctx context.Context, jobPath string, format outputFormat) (string, error) {
 	segs := jobPathToAPISegments(jobPath)
 	body, err := c.requestRaw(ctx, "GET", fmt.Sprintf("/%s/config.xml", segs), "application/xml", 0)
 	if err != nil {
@@ -1023,10 +1023,10 @@ func (c *JenkinsClient) getJobConfigTool(ctx context.Context, jobPath, format st
 	if err != nil {
 		return "", err
 	}
-	return renderStructured(cfg, format), nil
+	return renderStructured(cfg, format)
 }
 
-func (c *JenkinsClient) updateJobConfigTool(ctx context.Context, jobPath string, patch *JobConfig, format string) (string, error) {
+func (c *JenkinsClient) updateJobConfigTool(ctx context.Context, jobPath string, patch *JobConfig, format outputFormat) (string, error) {
 	if patch == nil || patch.isEmpty() {
 		return "", errors.New("patch is required and must contain at least one field to update.")
 	}
@@ -1046,7 +1046,11 @@ func (c *JenkinsClient) updateJobConfigTool(ctx context.Context, jobPath string,
 	if err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("Job config for %q updated.\n\nNew config:\n%s", jobPath, renderStructured(parsed, format)), nil
+	rendered, err := renderStructured(parsed, format)
+	if err != nil {
+		return "", fmt.Errorf("job config for %q was updated, but rendering it failed: %w", jobPath, err)
+	}
+	return fmt.Sprintf("Job config for %q updated.\n\nNew config:\n%s", jobPath, rendered), nil
 }
 
 func (c *JenkinsClient) getTestsTool(ctx context.Context, jobPath string, buildNumber, maxFailures int, includeStackTrace bool) (string, error) {

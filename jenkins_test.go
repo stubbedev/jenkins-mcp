@@ -121,28 +121,43 @@ func TestExtractCommitAndBranch(t *testing.T) {
 }
 
 func TestPickFormat(t *testing.T) {
-	defaultFormat = "toon"
-	if got := pickFormat(map[string]any{"format": "json"}); got != "json" {
-		t.Errorf("explicit json: %q", got)
+	defaultFormat = formatTOON
+	cases := []struct {
+		args    map[string]any
+		want    outputFormat
+		wantErr string
+	}{
+		{map[string]any{"format": "json"}, formatJSON, ""},
+		{map[string]any{}, formatTOON, ""},
+		{map[string]any{"format": "bogus"}, "", `format must be "toon" or "json", got "bogus"`},
+		{map[string]any{"format": "JSON"}, "", `got "JSON"`},
+		{map[string]any{"format": 1.0}, "", "format must be a string, got 1"},
 	}
-	if got := pickFormat(map[string]any{"format": "bogus"}); got != "toon" {
-		t.Errorf("bogus falls back to default: %q", got)
-	}
-	if got := pickFormat(map[string]any{}); got != "toon" {
-		t.Errorf("no arg uses default: %q", got)
+	for _, c := range cases {
+		got, err := pickFormat(c.args)
+		switch {
+		case c.wantErr == "" && (err != nil || got != c.want):
+			t.Errorf("pickFormat(%v) = %q, %v; want %q", c.args, got, err, c.want)
+		case c.wantErr != "" && (err == nil || !strings.Contains(err.Error(), c.wantErr)):
+			t.Errorf("pickFormat(%v) = %q, %v; want error containing %q", c.args, got, err, c.wantErr)
+		}
 	}
 }
 
 func TestRenderStructured(t *testing.T) {
 	v := map[string]any{"name": "x", "n": 3}
-	j := renderStructured(v, "json")
-	if !strings.Contains(j, "\"name\": \"x\"") {
-		t.Errorf("json render missing field: %s", j)
+	j, err := renderStructured(v, formatJSON)
+	if err != nil || !strings.Contains(j, "\"name\": \"x\"") {
+		t.Errorf("json render = %q, %v", j, err)
 	}
-	// TOON should render numbers unquoted and be non-empty
-	tn := renderStructured(v, "toon")
-	if tn == "" || strings.Contains(tn, "\"n\": \"3\"") {
-		t.Errorf("toon render looks wrong: %s", tn)
+	tn, err := renderStructured(v, formatTOON)
+	if err != nil || tn == "" || strings.Contains(tn, "\"n\": \"3\"") {
+		t.Errorf("toon render = %q, %v", tn, err)
+	}
+	for _, format := range []outputFormat{formatJSON, formatTOON} {
+		if out, err := renderStructured(map[string]any{"bad": make(chan int)}, format); err == nil {
+			t.Errorf("%s: unencodable value rendered as %q instead of failing", format, out)
+		}
 	}
 }
 

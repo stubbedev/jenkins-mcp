@@ -696,3 +696,26 @@ func TestConcurrentBuildsFollowTheJobType(t *testing.T) {
 		t.Errorf("freestyle concurrency stays at the root: %v\n%s", err, out)
 	}
 }
+
+func TestDefinitionReportsJenkinsDefaultsNotInventedOnes(t *testing.T) {
+	bare := `<flow-definition><definition class="org.jenkinsci.plugins.workflow.cps.CpsScmFlowDefinition">` + fmt.Sprintf(gitSCMXML, "**", "") + `</definition></flow-definition>`
+	cfg, err := parseJobConfig(bare)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d := cfg.Definition; d == nil || d.ScriptPath != nil || d.Lightweight == nil || *d.Lightweight {
+		t.Errorf("scm definition without scriptPath/lightweight: %+v; want no scriptPath and lightweight=false", d)
+	}
+	inline := `<flow-definition><definition class="org.jenkinsci.plugins.workflow.cps.CpsFlowDefinition"><script>echo</script></definition></flow-definition>`
+	if cfg, err := parseJobConfig(inline); err != nil || cfg.Definition.Sandbox == nil || *cfg.Definition.Sandbox {
+		t.Errorf("inline definition without sandbox runs unsandboxed: %+v, %v", cfg.Definition, err)
+	}
+	other := `<flow-definition><definition class="org.example.TemplateFlowDefinition"/></flow-definition>`
+	cfg, err = parseJobConfig(other)
+	if err != nil || cfg.Definition == nil || cfg.Definition.Class != "org.example.TemplateFlowDefinition" {
+		t.Errorf("unknown definition must be shown by class: %+v, %v", cfg.Definition, err)
+	}
+	if _, err := newJobPatch(JobConfig{Definition: &PipelineDef{Class: "x"}}); err == nil || !strings.Contains(err.Error(), "class is read-only") {
+		t.Errorf("class in a patch: want error, got %v", err)
+	}
+}

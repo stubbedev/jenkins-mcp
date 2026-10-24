@@ -107,6 +107,7 @@ const (
 
 type PipelineDef struct {
 	Type        DefinitionType `json:"type,omitempty"`
+	Class       string         `json:"class,omitempty"`
 	Script      *string        `json:"script,omitempty"`
 	Sandbox     *bool          `json:"sandbox,omitempty"`
 	ScriptPath  *string        `json:"scriptPath,omitempty"`
@@ -384,22 +385,19 @@ func parseJobConfig(xml string) (*JobConfigView, error) {
 
 	if cfg.Type == "pipeline" {
 		defn := root.SelectElement("definition")
-		switch kind, _ := definitionTypeOf(defn); kind {
-		case definitionInline:
+		switch kind, class := definitionTypeOf(defn); {
+		case kind == definitionInline:
 			script := childText(defn, "script")
-			def := &PipelineDef{Type: definitionInline, Script: &script}
-			def.Sandbox = x.boolean(defn, "sandbox")
+			cfg.Definition = &PipelineDef{Type: definitionInline, Script: &script, Sandbox: x.booleanOr(defn, "sandbox", false)}
+		case kind == definitionSCM:
+			def := &PipelineDef{Type: definitionSCM, Lightweight: x.booleanOr(defn, "lightweight", false)}
+			if c := defn.SelectElement("scriptPath"); c != nil {
+				path := strings.TrimSpace(c.Text())
+				def.ScriptPath = &path
+			}
 			cfg.Definition = def
-		case definitionSCM:
-			lightweight := true
-			if b := x.boolean(defn, "lightweight"); b != nil {
-				lightweight = *b
-			}
-			scriptPath := childText(defn, "scriptPath")
-			if scriptPath == "" {
-				scriptPath = "Jenkinsfile"
-			}
-			cfg.Definition = &PipelineDef{Type: definitionSCM, ScriptPath: &scriptPath, Lightweight: &lightweight}
+		case defn != nil:
+			cfg.Definition = &PipelineDef{Class: orDefault(class, "(no class)")}
 		}
 	}
 
@@ -757,6 +755,9 @@ func (p Parameter) validate() error {
 }
 
 func (d PipelineDef) validate() error {
+	if d.Class != "" {
+		return errors.New("class is read-only; choose type inline or scm instead")
+	}
 	switch d.Type {
 	case "", definitionInline, definitionSCM:
 	default:
@@ -994,6 +995,13 @@ func (x *xmlValues) boolean(e *etree.Element, tag string) *bool {
 		return nil
 	}
 	return &b
+}
+
+func (x *xmlValues) booleanOr(e *etree.Element, tag string, javaDefault bool) *bool {
+	if v := x.boolean(e, tag); v != nil {
+		return v
+	}
+	return &javaDefault
 }
 
 func (x *xmlValues) integer(e *etree.Element, tag string) *int {

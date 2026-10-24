@@ -31,7 +31,11 @@ func main() {
 
 	tc := resolveTransport(os.Args[1:])
 
-	config := loadConfig()
+	config, err := loadConfig(os.Args[1:])
+	if err != nil {
+		logErr("[jenkins-mcp] " + err.Error())
+		os.Exit(1)
+	}
 	if config != nil {
 		jenkins = NewJenkinsClient(*config)
 		go reportConnection(jenkins)

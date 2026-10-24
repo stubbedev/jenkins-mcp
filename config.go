@@ -2,9 +2,16 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 )
 
@@ -18,9 +25,8 @@ type Config struct {
 	NotifyCommitToken string
 }
 
-// configFile mirrors the on-disk ~/.jenkins-mcp.json shape. repoJobMap values
-// may be a single string or an array of strings, so it is decoded leniently.
 type configFile struct {
+	Schema            string                     `json:"$schema"`
 	URL               string                     `json:"url"`
 	Username          string                     `json:"username"`
 	Token             string                     `json:"token"`
@@ -28,17 +34,21 @@ type configFile struct {
 	RepoJobMap        map[string]json.RawMessage `json:"repoJobMap"`
 }
 
-// loadConfig resolves configuration in the same precedence order as the original
-// TypeScript server: --config flag → JENKINS_MCP_CONFIG → ~/.jenkins-mcp.json →
-// ./.jenkins-mcp.json, with JENKINS_URL / JENKINS_USERNAME / JENKINS_TOKEN env
-// vars as fallbacks for any field the file does not set. Returns nil when the
-// required url/username/token are not all present.
-func loadConfig() *Config {
+type configSource struct {
+	path     string
+	explicit bool
+}
+
+func loadConfig(args []string) (*Config, error) {
 	loadDotEnv()
 
-	var file *configFile
-	if path := configPath(); path != "" {
-		file = readConfigFile(path)
+	sources, err := configSources(args)
+	if err != nil {
+		return nil, err
+	}
+	cfg, err := readConfigFile(sources)
+	if err != nil {
+		return nil, err
 	}
 
 	get := func(fileVal, envKey string) string {
@@ -46,15 +56,6 @@ func loadConfig() *Config {
 			return fileVal
 		}
 		return os.Getenv(envKey)
-	}
-
-	cfg := &Config{}
-	if file != nil {
-		cfg.URL = file.URL
-		cfg.Username = file.Username
-		cfg.Token = file.Token
-		cfg.NotifyCommitToken = file.NotifyCommitToken
-		cfg.RepoJobMap = normalizeRepoJobMap(file.RepoJobMap)
 	}
 	cfg.URL = get(cfg.URL, "JENKINS_URL")
 	cfg.Username = get(cfg.Username, "JENKINS_USERNAME")
@@ -73,41 +74,32 @@ func loadConfig() *Config {
 			missing = append(missing, "token (or JENKINS_TOKEN)")
 		}
 		logErr("[jenkins-mcp] Disabled: missing " + strings.Join(missing, ", "))
-		return nil
+		return nil, nil
 	}
-	return cfg
+	return &cfg, nil
 }
 
-// configPath finds the config file path using the documented precedence,
-// returning "" when none is found.
-func configPath() string {
-	args := os.Args[1:]
+func configSources(args []string) ([]configSource, error) {
 	for i, a := range args {
-		if a == "--config" && i+1 < len(args) {
-			abs, _ := filepath.Abs(args[i+1])
-			return abs
+		if a != "--config" {
+			continue
 		}
+		if i+1 >= len(args) || args[i+1] == "" {
+			return nil, errors.New("--config needs a path argument")
+		}
+		return []configSource{{path: args[i+1], explicit: true}}, nil
 	}
 	if env := os.Getenv("JENKINS_MCP_CONFIG"); env != "" {
-		abs, _ := filepath.Abs(env)
-		return abs
+		return []configSource{{path: env, explicit: true}}, nil
 	}
+	var out []configSource
 	if home, err := os.UserHomeDir(); err == nil {
-		if dotfile := filepath.Join(home, ".jenkins-mcp.json"); fileExists(dotfile) {
-			return dotfile
-		}
+		out = append(out, configSource{path: filepath.Join(home, ".jenkins-mcp.json")})
 	}
-	// XDG: $XDG_CONFIG_HOME/jenkins-mcp/config.json (default ~/.config/...).
-	if xdg := xdgConfigPath(); xdg != "" && fileExists(xdg) {
-		return xdg
+	if xdg := xdgConfigPath(); xdg != "" {
+		out = append(out, configSource{path: xdg})
 	}
-	if cwd, err := os.Getwd(); err == nil {
-		cwdCfg := filepath.Join(cwd, ".jenkins-mcp.json")
-		if fileExists(cwdCfg) {
-			return cwdCfg
-		}
-	}
-	return ""
+	return append(out, configSource{path: ".jenkins-mcp.json"}), nil
 }
 
 // xdgConfigPath returns the XDG config file location for jenkins-mcp, honoring
@@ -124,37 +116,59 @@ func xdgConfigPath() string {
 	return filepath.Join(base, "jenkins-mcp", "config.json")
 }
 
-func readConfigFile(path string) *configFile {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil
+func readConfigFile(sources []configSource) (Config, error) {
+	for _, src := range sources {
+		data, err := os.ReadFile(src.path)
+		if err != nil {
+			if !src.explicit && errors.Is(err, fs.ErrNotExist) {
+				continue
+			}
+			return Config{}, fmt.Errorf("reading config file: %w", err)
+		}
+		cfg, err := parseConfigFile(data)
+		if err != nil {
+			return Config{}, fmt.Errorf("parsing config file %s: %w", src.path, err)
+		}
+		return cfg, nil
 	}
-	var f configFile
-	if err := json.Unmarshal(data, &f); err != nil {
-		return nil
-	}
-	return &f
+	return Config{}, nil
 }
 
-// normalizeRepoJobMap lowercases the remote-substring keys and coerces each
-// value (string or []string) into []string, matching the TS constructor.
-func normalizeRepoJobMap(raw map[string]json.RawMessage) map[string][]string {
+func parseConfigFile(data []byte) (Config, error) {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	var f configFile
+	if err := dec.Decode(&f); err != nil {
+		return Config{}, err
+	}
+	if err := dec.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return Config{}, errors.New("unexpected data after the top-level JSON object")
+	}
+	repoJobMap, err := normalizeRepoJobMap(f.RepoJobMap)
+	if err != nil {
+		return Config{}, err
+	}
+	return Config{URL: f.URL, Username: f.Username, Token: f.Token, NotifyCommitToken: f.NotifyCommitToken, RepoJobMap: repoJobMap}, nil
+}
+
+func normalizeRepoJobMap(raw map[string]json.RawMessage) (map[string][]string, error) {
 	if len(raw) == 0 {
-		return nil
+		return nil, nil
 	}
 	out := make(map[string][]string, len(raw))
-	for k, v := range raw {
+	for _, k := range slices.Sorted(maps.Keys(raw)) {
 		var single string
-		if err := json.Unmarshal(v, &single); err == nil {
+		if err := json.Unmarshal(raw[k], &single); err == nil {
 			out[strings.ToLower(k)] = []string{single}
 			continue
 		}
 		var list []string
-		if err := json.Unmarshal(v, &list); err == nil {
-			out[strings.ToLower(k)] = list
+		if err := json.Unmarshal(raw[k], &list); err != nil {
+			return nil, fmt.Errorf("repoJobMap[%q] must be a job path or an array of job paths, got %s", k, raw[k])
 		}
+		out[strings.ToLower(k)] = list
 	}
-	return out
+	return out, nil
 }
 
 // loadDotEnv loads ./.env into the process environment (without overriding
@@ -183,9 +197,4 @@ func loadDotEnv() {
 			os.Setenv(key, val)
 		}
 	}
-}
-
-func fileExists(path string) bool {
-	info, err := os.Stat(path)
-	return err == nil && !info.IsDir()
 }

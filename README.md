@@ -88,7 +88,7 @@ JENKINS_TOKEN=your-api-token
 JENKINS_NOTIFY_COMMIT_TOKEN=your-notifycommit-token   # optional
 ```
 
-Config is resolved in this order: `--config <path>` CLI arg → `JENKINS_MCP_CONFIG` env var → `~/.jenkins-mcp.json` → `$XDG_CONFIG_HOME/jenkins-mcp/config.json` (default `~/.config/jenkins-mcp/config.json`) → `.jenkins-mcp.json` in cwd → environment variables.
+Config is resolved in this order: `--config <path>` CLI arg → `JENKINS_MCP_CONFIG` env var → `~/.jenkins-mcp.json` → `$XDG_CONFIG_HOME/jenkins-mcp/config.json` (default `~/.config/jenkins-mcp/config.json`) → `.jenkins-mcp.json` in cwd → environment variables. The first file found is used. A path given with `--config` or `JENKINS_MCP_CONFIG` must exist; the default locations are optional. A config file that cannot be read, is not valid JSON, or has keys outside the schema stops the server with the path and the reason.
 
 ### 3. Install
 

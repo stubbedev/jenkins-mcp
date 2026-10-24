@@ -37,7 +37,7 @@ final class ComposerPlugin implements PluginInterface, EventSubscriberInterface
 
     public function fetchBinary(): void
     {
-        if (getenv('JENKINS_MCP_SKIP_DOWNLOAD') === '1') {
+        if (Binary::skipDownload()) {
             return;
         }
         try {

@@ -148,7 +148,7 @@ The install prints the binary's path. Point your client at it:
 On Windows the binary is `jenkins-mcp-native.exe`. The PHP launcher works even if you declined the
 plugin: it downloads the binary on its first run (needs `ext-curl` or `allow_url_fopen`), then hands
 over to it. Clients start the server from their own working directory, so use absolute paths. Set
-`JENKINS_MCP_SKIP_DOWNLOAD=1` to skip the install-time download.
+`JENKINS_MCP_SKIP_DOWNLOAD=1` (or `true`) to skip the install-time download; any value other than 1, true, 0 or false is an error.
 
 #### Binary cache
 

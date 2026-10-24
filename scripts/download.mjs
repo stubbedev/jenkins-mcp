@@ -9,6 +9,8 @@ const REPO = `stubbedev/${NAME}`;
 const SOURCE_HINT = `go install github.com/${REPO}@latest`;
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
+const DOWNLOAD_TIMEOUT_MS = 120_000;
+const LINK_UNSUPPORTED = new Set(['EXDEV', 'EPERM', 'ENOTSUP', 'EMLINK', 'EACCES']);
 const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf-8'));
 
 const PLATFORMS = {
@@ -82,7 +84,10 @@ async function present(path) {
 async function place(cached, dest) {
   const tmp = await tmpBeside(dest);
   try {
-    await link(cached, tmp).catch(() => copyFile(cached, tmp));
+    await link(cached, tmp).catch((err) => {
+      if (!LINK_UNSUPPORTED.has(err.code)) throw err;
+      return copyFile(cached, tmp);
+    });
     await commit(tmp, dest);
   } finally {
     await rm(tmp, { force: true });
@@ -115,9 +120,29 @@ async function fetchRelease(tag, asset) {
 }
 
 async function get(url) {
-  const res = await fetch(url, { redirect: 'follow' });
-  if (!res.ok) throw new Error(`Failed to download ${url}: HTTP ${res.status}`);
-  return Buffer.from(await res.arrayBuffer());
+  let res;
+  try {
+    res = await fetch(url, { redirect: 'follow', signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS) });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return Buffer.from(await res.arrayBuffer());
+  } catch (err) {
+    const reason = err.name === 'TimeoutError' ? `no response within ${DOWNLOAD_TIMEOUT_MS / 1000}s` : err.message;
+    throw new Error(`Failed to download ${url}: ${reason}`);
+  }
+}
+
+export function skipDownload(value = process.env.JENKINS_MCP_SKIP_DOWNLOAD) {
+  switch ((value ?? '').toLowerCase()) {
+    case '':
+    case '0':
+    case 'false':
+      return false;
+    case '1':
+    case 'true':
+      return true;
+    default:
+      throw new Error(`JENKINS_MCP_SKIP_DOWNLOAD must be 1, true, 0 or false, got ${JSON.stringify(value)}`);
+  }
 }
 
 async function store(data, cached) {

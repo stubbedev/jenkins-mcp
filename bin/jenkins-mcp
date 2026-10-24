@@ -26,7 +26,8 @@ $args = array_slice($_SERVER['argv'] ?? [], 1);
 
 if (function_exists('pcntl_exec')) {
     pcntl_exec($bin, $args);
-    // Only reached when exec failed; fall through to proc_open.
+    fwrite(STDERR, "[jenkins-mcp] failed to exec {$bin}: " . pcntl_strerror(pcntl_get_last_error()) . "\n");
+    exit(1);
 }
 
 $proc = proc_open(array_merge([$bin], $args), [STDIN, STDOUT, STDERR], $pipes, null, null, ['bypass_shell' => true]);

@@ -42,6 +42,19 @@ final class Binary
         'riscv64' => 'riscv64',
     ];
 
+    public static function skipDownload(): bool
+    {
+        $value = getenv('JENKINS_MCP_SKIP_DOWNLOAD');
+
+        return match (strtolower($value === false ? '' : $value)) {
+            '', '0', 'false' => false,
+            '1', 'true' => true,
+            default => throw new \RuntimeException(
+                'JENKINS_MCP_SKIP_DOWNLOAD must be 1, true, 0 or false, got ' . json_encode($value),
+            ),
+        };
+    }
+
     public static function ensure(): string
     {
         $dest = dirname(__DIR__) . '/bin/' . self::NAME . '-native' . self::target()[2];
@@ -85,9 +98,13 @@ final class Binary
     private static function version(): string
     {
         $file = dirname(__DIR__) . '/package.json';
-        $pkg = json_decode((string) @file_get_contents($file), true);
+        $json = @file_get_contents($file);
+        if ($json === false) {
+            throw new \RuntimeException("Cannot read {$file}: " . self::lastError());
+        }
+        $pkg = json_decode($json, true);
         if (!is_array($pkg) || !is_string($pkg['version'] ?? null)) {
-            throw new \RuntimeException("Cannot read the version from {$file}");
+            throw new \RuntimeException("Cannot read the version from {$file}: " . (json_last_error() ? json_last_error_msg() : 'no version field'));
         }
 
         return $pkg['version'];
@@ -177,13 +194,20 @@ final class Binary
     {
         $base = sprintf('https://github.com/%s/releases/download/%s', self::REPO, $tag);
         self::download("{$base}/checksums.txt", "{$dir}/checksums.txt");
-        $sums = (string) file_get_contents("{$dir}/checksums.txt");
+        $sums = @file_get_contents("{$dir}/checksums.txt");
+        if ($sums === false) {
+            throw new \RuntimeException("Cannot read the downloaded checksums.txt: " . self::lastError());
+        }
         if (!preg_match('/^([0-9a-f]{64})\s+\*?' . preg_quote($asset, '/') . '$/m', $sums, $m)) {
             throw new \RuntimeException("{$asset} is not listed in {$tag} checksums.txt");
         }
         $file = "{$dir}/{$asset}";
         self::download("{$base}/{$asset}", $file);
-        if (!hash_equals($m[1], hash_file('sha256', $file))) {
+        $actual = hash_file('sha256', $file);
+        if ($actual === false) {
+            throw new \RuntimeException("Cannot hash {$file}: " . self::lastError());
+        }
+        if (!hash_equals($m[1], $actual)) {
             throw new \RuntimeException("Checksum mismatch for {$asset} from {$tag}");
         }
 

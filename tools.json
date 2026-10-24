@@ -325,7 +325,7 @@
       "readOnlyHint": true,
       "openWorldHint": true
     },
-    "description": "Fetch the configuration for a Jenkins job as a structured object. Use when asked to \"show the job config\", \"what does the Jenkinsfile point to?\", or before making changes with jenkins_update_job_config. Pipeline jobs include the script path or inline Groovy. Includes the SCM section: Git remotes (URL with any embedded credentials redacted, credentials id), branch specs (flagged when parameterized) and the IgnoreNotifyCommit extension. buildRevision.mode says whether jenkins_build_revision will build an exact commit on this job: pinsCommit, pinsCommitWithoutBranch (parameterized branch spec: pass sha explicitly), or notTriggered, with the reason. For Pipeline jobs Jenkins matches notifications against the SCMs the last build checked out, which normally include the definition SCM shown here.",
+    "description": "Fetch the configuration for a Jenkins job as a structured object. Use when asked to \"show the job config\", \"what does the Jenkinsfile point to?\", or before making changes with jenkins_update_job_config. Pipeline jobs include the script path or inline Groovy. Includes the SCM section: Git remotes (URL with any embedded credentials redacted, credentials id), branch specs (flagged when parameterized) and the IgnoreNotifyCommit extension. otherTriggers names trigger kinds that the triggers field cannot represent (e.g. GitHub push); they are read-only and survive a triggers patch. buildRevision.mode says whether jenkins_build_revision will build an exact commit on this job: pinsCommit, pinsCommitWithoutBranch (parameterized branch spec: pass sha explicitly), or notTriggered, with the reason. For Pipeline jobs Jenkins matches notifications against the SCMs the last build checked out, which normally include the definition SCM shown here.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -388,7 +388,7 @@
         },
         "patch": {
           "type": "object",
-          "description": "Fields to update. All fields are optional \u2014 only provided fields are changed. triggers replaces the job's whole list of cron and scmPoll triggers, so start from the list jenkins_get_job_config returns. Unknown fields, including the read-only scm and buildRevision from jenkins_get_job_config, are rejected.",
+          "description": "Fields to update. All fields are optional \u2014 only provided fields are changed. triggers replaces the job's cron and scmPoll triggers, so start from the list jenkins_get_job_config returns; other trigger kinds (listed read-only in otherTriggers) are kept. Unknown fields, including the read-only scm and buildRevision from jenkins_get_job_config, are rejected.",
           "properties": {
             "description": {
               "type": "string"

@@ -400,3 +400,35 @@ func TestFreestyleTriggersStayAtRoot(t *testing.T) {
 		t.Errorf("freestyle must ignore a pipeline trigger property: triggers %+v, buildRevision %+v", cfg.Triggers, cfg.BuildRevision)
 	}
 }
+
+func TestTriggersPatchKeepsUnrepresentedTriggers(t *testing.T) {
+	github := `<com.cloudbees.jenkins.GitHubPushTrigger plugin="github@1.40"><spec></spec></com.cloudbees.jenkins.GitHubPushTrigger>`
+	cases := map[string]string{
+		"freestyle":       freestyleXML(fmt.Sprintf(gitSCMXML, "**", ""), github+pollTrigger, false),
+		"pipeline":        pipelineWithTriggerProperty(github + pollTrigger),
+		"legacy pipeline": strings.Replace(scmPipelineXML, "<triggers>", "<triggers>"+github, 1),
+	}
+	for name, xml := range cases {
+		cfg, err := parseJobConfig(xml)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if !reflect.DeepEqual(cfg.OtherTriggers, []string{"com.cloudbees.jenkins.GitHubPushTrigger"}) {
+			t.Errorf("%s: otherTriggers = %v", name, cfg.OtherTriggers)
+		}
+		out, err := mergeJobConfig(xml, &JobConfig{Triggers: []Trigger{{Type: triggerCron, Spec: "H 4 * * *"}}})
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		back, err := parseJobConfig(out)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if !reflect.DeepEqual(back.OtherTriggers, cfg.OtherTriggers) || !reflect.DeepEqual(back.Triggers, []Trigger{{Type: triggerCron, Spec: "H 4 * * *"}}) {
+			t.Errorf("%s: after patch triggers %+v, otherTriggers %v:\n%s", name, back.Triggers, back.OtherTriggers, out)
+		}
+		if _, prop := triggerLocations(t, out); name != "freestyle" && prop != 2 {
+			t.Errorf("%s: want both triggers in the job property, got %d:\n%s", name, prop, out)
+		}
+	}
+}

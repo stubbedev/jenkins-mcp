@@ -546,7 +546,7 @@ func parsePatch(raw any) (*JobConfig, error) {
 	dec.DisallowUnknownFields()
 	var patch JobConfig
 	if err := dec.Decode(&patch); err != nil {
-		return nil, fmt.Errorf("invalid patch (scm and buildRevision are read-only): %w", err)
+		return nil, fmt.Errorf("invalid patch (scm, otherTriggers and buildRevision are read-only): %w", err)
 	}
 	return &patch, nil
 }

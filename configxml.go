@@ -54,6 +54,7 @@ type JobConfig struct {
 
 type JobConfigView struct {
 	JobConfig
+	OtherTriggers []string             `json:"otherTriggers,omitempty"`
 	SCM           []SCMConfig          `json:"scm,omitempty"`
 	BuildRevision BuildRevisionSupport `json:"buildRevision"`
 }
@@ -233,6 +234,8 @@ func parseJobConfig(xml string) (*JobConfigView, error) {
 			case tagSCMTrigger:
 				ignore, _ := childBool(t, "ignorePostCommitHooks")
 				cfg.Triggers = append(cfg.Triggers, Trigger{Type: triggerSCMPoll, Spec: strings.TrimSpace(childText(t, "spec")), IgnorePostCommitHooks: ignore})
+			default:
+				cfg.OtherTriggers = append(cfg.OtherTriggers, t.Tag)
 			}
 		}
 	}
@@ -378,19 +381,26 @@ func writableTriggerContainer(root *etree.Element) *etree.Element {
 		}
 		return trig
 	}
-	removeChild(root, "triggers")
-	if trig := pipelineTriggersContainer(root); trig != nil {
-		return trig
+	trig := pipelineTriggersContainer(root)
+	if trig == nil {
+		props := root.SelectElement("properties")
+		if props == nil {
+			props = root.CreateElement("properties")
+		}
+		prop := props.SelectElement(tagPipelineTriggersProp)
+		if prop == nil {
+			prop = props.CreateElement(tagPipelineTriggersProp)
+		}
+		trig = prop.CreateElement("triggers")
 	}
-	props := root.SelectElement("properties")
-	if props == nil {
-		props = root.CreateElement("properties")
+	if legacy := root.SelectElement("triggers"); legacy != nil {
+		for _, c := range legacy.ChildElements() {
+			legacy.RemoveChild(c)
+			trig.AddChild(c)
+		}
+		root.RemoveChild(legacy)
 	}
-	prop := props.SelectElement(tagPipelineTriggersProp)
-	if prop == nil {
-		prop = props.CreateElement(tagPipelineTriggersProp)
-	}
-	return prop.CreateElement("triggers")
+	return trig
 }
 
 func scmTriggers(root *etree.Element) []*etree.Element {
@@ -546,9 +556,8 @@ func mergeJobConfig(xml string, patch *JobConfig) (string, error) {
 			}
 		}
 		trig := writableTriggerContainer(root)
-		for _, c := range trig.ChildElements() {
-			trig.RemoveChild(c)
-		}
+		removeChild(trig, tagTimerTrigger)
+		removeChild(trig, tagSCMTrigger)
 		for _, t := range patch.Triggers {
 			switch t.Type {
 			case triggerCron:

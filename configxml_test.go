@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"reflect"
 	"strings"
@@ -717,5 +718,121 @@ func TestDefinitionReportsJenkinsDefaultsNotInventedOnes(t *testing.T) {
 	}
 	if _, err := newJobPatch(JobConfig{Definition: &PipelineDef{Class: "x"}}); err == nil || !strings.Contains(err.Error(), "class is read-only") {
 		t.Errorf("class in a patch: want error, got %v", err)
+	}
+}
+
+const parameterizedXML = `<?xml version='1.1' encoding='UTF-8'?>
+<project>
+  <properties>
+    <hudson.model.ParametersDefinitionProperty>
+      <parameterDefinitions>
+        <hudson.model.TextParameterDefinition><name>NOTES</name><description>n</description><defaultValue>t</defaultValue></hudson.model.TextParameterDefinition>
+        <hudson.model.StringParameterDefinition><name>BRANCH</name><description>b</description><defaultValue>main</defaultValue><trim>true</trim></hudson.model.StringParameterDefinition>
+        <hudson.model.FileParameterDefinition><name>UPLOAD</name><description>f</description></hudson.model.FileParameterDefinition>
+        <hudson.model.PasswordParameterDefinition><name>SECRET</name><description>s</description><defaultValue>{AQAAABAAAAAQenc}</defaultValue></hudson.model.PasswordParameterDefinition>
+        <hudson.model.BooleanParameterDefinition><name>DRY</name><description>d</description><defaultValue>false</defaultValue></hudson.model.BooleanParameterDefinition>
+        <hudson.model.ChoiceParameterDefinition><name>ENV</name><description>e</description><choices class="java.util.Arrays$ArrayList"><a class="string-array"><string>dev</string><string>prod</string></a></choices></hudson.model.ChoiceParameterDefinition>
+      </parameterDefinitions>
+    </hudson.model.ParametersDefinitionProperty>
+  </properties>
+</project>`
+
+func TestParametersKeepOrderSecretsAndUnknownKinds(t *testing.T) {
+	cfg, err := parseJobConfig(parameterizedXML)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, p := range cfg.Parameters {
+		names = append(names, p.Name)
+		if p.Name == "SECRET" && (p.Default != nil || !p.DefaultHidden) {
+			t.Errorf("password default must be hidden: %+v", p)
+		}
+	}
+	if want := []string{"NOTES", "BRANCH", "SECRET", "DRY", "ENV"}; !reflect.DeepEqual(names, want) {
+		t.Errorf("parameter order = %v, want %v", names, want)
+	}
+	if want := []OtherParameter{{Class: "hudson.model.FileParameterDefinition", Name: "UPLOAD"}}; !reflect.DeepEqual(cfg.OtherParameters, want) {
+		t.Errorf("otherParameters = %+v, want %+v", cfg.OtherParameters, want)
+	}
+	for _, format := range []outputFormat{formatJSON, formatTOON} {
+		if out, err := renderStructured(cfg, format); err != nil || strings.Contains(out, "AQAAABAAAAAQenc") {
+			t.Errorf("%s output leaks the encrypted password default: %v\n%s", format, err, out)
+		}
+	}
+
+	roundTrip := append([]Parameter{{Type: paramString, Name: "NEW", Default: ptr("x")}}, cfg.Parameters...)
+	out, err := mergeJobConfig(parameterizedXML, mustPatch(t, JobConfig{Parameters: roundTrip}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, keep := range []string{"{AQAAABAAAAAQenc}", "<trim>true</trim>", "hudson.model.FileParameterDefinition"} {
+		if !strings.Contains(out, keep) {
+			t.Errorf("round-trip patch dropped %q:\n%s", keep, out)
+		}
+	}
+	back, err := parseJobConfig(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	names = names[:0]
+	for _, p := range back.Parameters {
+		names = append(names, p.Name)
+	}
+	if want := []string{"NEW", "NOTES", "BRANCH", "SECRET", "DRY", "ENV"}; !reflect.DeepEqual(names, want) {
+		t.Errorf("patched order = %v, want %v", names, want)
+	}
+
+	if _, err := mergeJobConfig(parameterizedXML, mustPatch(t, JobConfig{Parameters: []Parameter{{Type: paramString, Name: "UPLOAD"}}})); err == nil || !strings.Contains(err.Error(), "FileParameterDefinition") {
+		t.Errorf("replacing an unknown-kind parameter: want error, got %v", err)
+	}
+	for _, bad := range []Parameter{{Type: paramPassword, Name: "S", DefaultHidden: true, Default: ptr("new")}, {Type: paramString, Name: "S", DefaultHidden: true}} {
+		if _, err := newJobPatch(JobConfig{Parameters: []Parameter{bad}}); err == nil || !strings.Contains(err.Error(), "defaultHidden only marks a password parameter") {
+			t.Errorf("contradictory defaultHidden %+v: want error, got %v", bad, err)
+		}
+	}
+
+	cleared, err := mergeJobConfig(freestyleXML(fmt.Sprintf(gitSCMXML, "**", ""), pollTrigger, false), mustPatch(t, JobConfig{Parameters: []Parameter{}}))
+	if err != nil || strings.Contains(cleared, tagParamsProp) {
+		t.Errorf("an empty parameter list must not leave an empty ParametersDefinitionProperty: %v\n%s", err, cleared)
+	}
+}
+
+func TestGetOutputIsAValidPatch(t *testing.T) {
+	fixtures := map[string]string{
+		"legacy pipeline":   scmPipelineXML,
+		"pipeline property": pipelineWithTriggerProperty(pollTrigger),
+		"inline pipeline":   inlinePipelineXML,
+		"freestyle":         freestyleWithRetention(modernRetention),
+		"parameterized":     parameterizedXML,
+	}
+	for name, xml := range fixtures {
+		cfg, err := parseJobConfig(xml)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		body, err := json.Marshal(map[string]any{"jobPath": "j", "patch": cfg.JobConfig})
+		if err != nil {
+			t.Fatal(err)
+		}
+		args, err := toolArgsFor(t, "jenkins_update_job_config", string(body))
+		if err != nil {
+			t.Errorf("%s: get output rejected by the patch schema: %v\n%s", name, err, body)
+			continue
+		}
+		patch, err := parsePatch(args.object("patch"))
+		if err != nil {
+			t.Errorf("%s: get output rejected as a patch: %v", name, err)
+			continue
+		}
+		out, err := mergeJobConfig(xml, patch)
+		if err != nil {
+			t.Errorf("%s: applying the unchanged config: %v", name, err)
+			continue
+		}
+		back, err := parseJobConfig(out)
+		if err != nil || !reflect.DeepEqual(back, cfg) {
+			t.Errorf("%s: an unchanged round-trip changed the config:\n got %+v\nwant %+v (%v)", name, back, cfg, err)
+		}
 	}
 }

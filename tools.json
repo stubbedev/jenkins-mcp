@@ -424,7 +424,7 @@
       "readOnlyHint": true,
       "openWorldHint": true
     },
-    "description": "Fetch the configuration for a Jenkins job as a structured object. Use when asked to \"show the job config\", \"what does the Jenkinsfile point to?\", or before making changes with jenkins_update_job_config. Pipeline jobs include the definition: inline Groovy with its sandbox flag, or the Jenkinsfile path and lightweight flag (absent flags read as Jenkins's default, false); any other definition is shown by class. Includes the SCM section: Git remotes (URL with any embedded credentials redacted, credentials id), branch specs (flagged when parameterized) and the IgnoreNotifyCommit extension. otherTriggers names trigger kinds that the triggers field cannot represent (e.g. GitHub push); they are read-only and survive a triggers patch. buildRevision.mode says whether jenkins_build_revision will build an exact commit on this job: pinsCommit, pinsCommitWithoutBranch (parameterized branch spec: pass sha explicitly), or notTriggered, with the reason. For Pipeline jobs Jenkins matches notifications against the SCMs the last build checked out, which normally include the definition SCM shown here.",
+    "description": "Fetch the configuration for a Jenkins job as a structured object. Use when asked to \"show the job config\", \"what does the Jenkinsfile point to?\", or before making changes with jenkins_update_job_config. Pipeline jobs include the definition: inline Groovy with its sandbox flag, or the Jenkinsfile path and lightweight flag (absent flags read as Jenkins's default, false); any other definition is shown by class. Includes the SCM section: Git remotes (URL with any embedded credentials redacted, credentials id), branch specs (flagged when parameterized) and the IgnoreNotifyCommit extension. Parameters are listed in job order; password defaults are never shown (defaultHidden says one is set), and parameter kinds the tool cannot edit are listed in otherParameters. otherTriggers names trigger kinds that the triggers field cannot represent (e.g. GitHub push); they are read-only and survive a triggers patch. buildRevision.mode says whether jenkins_build_revision will build an exact commit on this job: pinsCommit, pinsCommitWithoutBranch (parameterized branch spec: pass sha explicitly), or notTriggered, with the reason. For Pipeline jobs Jenkins matches notifications against the SCMs the last build checked out, which normally include the definition SCM shown here.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -597,7 +597,11 @@
                   },
                   "default": {
                     "type": "string",
-                    "description": "Default value. Not allowed for choice parameters, which default to their first choice; \"true\" or \"false\" for boolean parameters."
+                    "description": "Default value. Not allowed for choice parameters, which default to their first choice; \"true\" or \"false\" for boolean parameters. Password defaults are never shown; omit default to keep the stored one."
+                  },
+                  "defaultHidden": {
+                    "type": "boolean",
+                    "description": "As returned by jenkins_get_job_config for a password parameter with a stored default; keeps that default. Cannot be combined with default."
                   },
                   "description": {
                     "type": "string"
@@ -615,7 +619,8 @@
                   "name"
                 ],
                 "additionalProperties": false
-              }
+              },
+              "description": "Replaces the job's string, boolean, text, choice and password parameters, in this order; start from the list jenkins_get_job_config returns. Parameters of other kinds (otherParameters) are kept. A parameter that keeps its name and type keeps its other settings. A password parameter's stored default is kept unless default is given."
             },
             "buildRetention": {
               "type": "object",

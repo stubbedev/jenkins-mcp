@@ -57,6 +57,7 @@ type JobConfigView struct {
 	JobConfig
 	OtherBuildDiscarder string               `json:"otherBuildDiscarder,omitempty"`
 	OtherTriggers       []string             `json:"otherTriggers,omitempty"`
+	OtherParameters     []OtherParameter     `json:"otherParameters,omitempty"`
 	SCM                 []SCMConfig          `json:"scm,omitempty"`
 	BuildRevision       BuildRevisionSupport `json:"buildRevision"`
 }
@@ -166,11 +167,17 @@ const (
 )
 
 type Parameter struct {
-	Type        ParameterType `json:"type"`
-	Name        string        `json:"name"`
-	Default     *string       `json:"default,omitempty"`
-	Description string        `json:"description,omitempty"`
-	Choices     []string      `json:"choices,omitempty"`
+	Type          ParameterType `json:"type"`
+	Name          string        `json:"name"`
+	Default       *string       `json:"default,omitempty"`
+	DefaultHidden bool          `json:"defaultHidden,omitempty"`
+	Description   string        `json:"description,omitempty"`
+	Choices       []string      `json:"choices,omitempty"`
+}
+
+type OtherParameter struct {
+	Class string `json:"class"`
+	Name  string `json:"name"`
 }
 
 type BuildRetention struct {
@@ -415,7 +422,7 @@ func parseJobConfig(xml string) (*JobConfigView, error) {
 		}
 	}
 
-	cfg.Parameters = parseParameters(root)
+	cfg.Parameters, cfg.OtherParameters = parseParameters(root)
 
 	cfg.BuildRetention, cfg.OtherBuildDiscarder = parseBuildRetention(&x, root)
 
@@ -626,40 +633,109 @@ func buildRevisionSupport(x *xmlValues, root *etree.Element, disabled bool, scms
 	return BuildRevisionSupport{Mode: buildRevisionPinsCommit, Reason: "jenkins_build_revision pins the commit when the notified url matches one of the remotes and the branch matches a branch spec"}
 }
 
-func parseParameters(root *etree.Element) []Parameter {
+func parameterDefinitions(root *etree.Element) *etree.Element {
 	props := root.SelectElement("properties")
 	if props == nil {
 		return nil
 	}
-	paramProp := props.SelectElement(tagParamsProp)
-	if paramProp == nil {
+	prop := props.SelectElement(tagParamsProp)
+	if prop == nil {
 		return nil
 	}
-	defs := paramProp.SelectElement("parameterDefinitions")
+	return prop.SelectElement("parameterDefinitions")
+}
+
+func parseParameters(root *etree.Element) ([]Parameter, []OtherParameter) {
+	defs := parameterDefinitions(root)
 	if defs == nil {
-		return nil
+		return nil, nil
 	}
-	var out []Parameter
-	for class, ptype := range classToParamType {
-		for _, p := range defs.SelectElements(class) {
-			param := Parameter{Type: ptype, Name: childText(p, "name")}
+	var params []Parameter
+	var others []OtherParameter
+	for _, p := range defs.ChildElements() {
+		ptype, known := classToParamType[p.Tag]
+		if !known {
+			others = append(others, OtherParameter{Class: p.Tag, Name: childText(p, "name")})
+			continue
+		}
+		param := Parameter{Type: ptype, Name: childText(p, "name"), Description: childText(p, "description")}
+		switch ptype {
+		case paramChoice:
+			param.Choices = parseChoices(p)
+		case paramPassword:
+			param.DefaultHidden = strings.TrimSpace(childText(p, "defaultValue")) != ""
+		default:
 			if d := p.SelectElement("defaultValue"); d != nil {
 				v := d.Text()
 				param.Default = &v
-			} else if d := p.SelectElement("default"); d != nil {
-				v := d.Text()
-				param.Default = &v
 			}
-			if desc := childText(p, "description"); desc != "" {
-				param.Description = desc
-			}
-			if ptype == paramChoice {
-				param.Choices = parseChoices(p)
-			}
-			out = append(out, param)
 		}
+		params = append(params, param)
 	}
-	return out
+	return params, others
+}
+
+func mergeParameters(root *etree.Element, patch []Parameter) error {
+	defs := parameterDefinitions(root)
+	if defs == nil {
+		props := root.SelectElement("properties")
+		if props == nil {
+			props = root.CreateElement("properties")
+		}
+		prop := props.SelectElement(tagParamsProp)
+		if prop == nil {
+			prop = props.CreateElement(tagParamsProp)
+		}
+		defs = prop.CreateElement("parameterDefinitions")
+	}
+	existing := map[string]*etree.Element{}
+	others := map[string]string{}
+	for _, el := range defs.ChildElements() {
+		name := childText(el, "name")
+		if _, known := classToParamType[el.Tag]; !known {
+			others[name] = el.Tag
+			continue
+		}
+		if _, dup := existing[name]; dup {
+			return fmt.Errorf("patch.parameters: the job defines parameter %q twice; fix it in Jenkins first", name)
+		}
+		existing[name] = el
+		defs.RemoveChild(el)
+	}
+	for i, p := range patch {
+		if class, clash := others[p.Name]; clash {
+			return fmt.Errorf("patch.parameters[%d]: %q is a %s parameter, which this tool cannot replace", i, p.Name, class)
+		}
+		el := existing[p.Name]
+		if el == nil || el.Tag != paramClass[p.Type] {
+			el = etree.NewElement(paramClass[p.Type])
+		}
+		setChildText(el, "name", p.Name)
+		setChildText(el, "description", p.Description)
+		switch p.Type {
+		case paramChoice:
+			removeChild(el, "choices")
+			choices := el.CreateElement("choices")
+			choices.CreateAttr("class", "java.util.Arrays$ArrayList")
+			a := choices.CreateElement("a")
+			a.CreateAttr("class", "string-array")
+			for _, c := range p.Choices {
+				a.CreateElement("string").SetText(c)
+			}
+		case paramPassword:
+			if p.Default != nil || el.SelectElement("defaultValue") == nil {
+				setChildText(el, "defaultValue", deref(p.Default))
+			}
+		default:
+			setChildText(el, "defaultValue", deref(p.Default))
+		}
+		defs.AddChild(el)
+	}
+	if len(defs.ChildElements()) == 0 {
+		prop := defs.Parent()
+		prop.Parent().RemoveChild(prop)
+	}
+	return nil
 }
 
 // parseChoices extracts choice strings from a ChoiceParameterDefinition. Jenkins
@@ -728,6 +804,9 @@ func newJobPatch(cfg JobConfig) (jobPatch, error) {
 }
 
 func (p Parameter) validate() error {
+	if p.DefaultHidden && (p.Type != paramPassword || p.Default != nil) {
+		return fmt.Errorf("parameter %q: defaultHidden only marks a password parameter whose stored default is kept, so it cannot be combined with default or another type", p.Name)
+	}
 	if _, ok := paramClass[p.Type]; !ok {
 		return fmt.Errorf("unknown parameter type %q (want string, boolean, text, choice or password)", p.Type)
 	}
@@ -852,35 +931,8 @@ func mergeJobConfig(xml string, jp jobPatch) (string, error) {
 	}
 
 	if patch.Parameters != nil {
-		props := root.SelectElement("properties")
-		if props == nil {
-			props = root.CreateElement("properties")
-		}
-		removeChild(props, tagParamsProp)
-		if len(patch.Parameters) > 0 {
-			prop := props.CreateElement(tagParamsProp)
-			defs := prop.CreateElement("parameterDefinitions")
-			for _, p := range patch.Parameters {
-				el := defs.CreateElement(paramClass[p.Type])
-				el.CreateElement("name").SetText(p.Name)
-				if p.Type != paramChoice {
-					def := ""
-					if p.Default != nil {
-						def = *p.Default
-					}
-					el.CreateElement("defaultValue").SetText(def)
-				}
-				el.CreateElement("description").SetText(p.Description)
-				if p.Type == paramChoice {
-					choices := el.CreateElement("choices")
-					choices.CreateAttr("class", "java.util.Arrays$ArrayList")
-					a := choices.CreateElement("a")
-					a.CreateAttr("class", "string-array")
-					for _, c := range p.Choices {
-						a.CreateElement("string").SetText(c)
-					}
-				}
-			}
+		if err := mergeParameters(root, patch.Parameters); err != nil {
+			return "", err
 		}
 	}
 
@@ -942,7 +994,7 @@ func mergeDefinition(root *etree.Element, def PipelineDef) error {
 		removeChild(existing, "scriptPath")
 		removeChild(existing, "lightweight")
 	case definitionSCM:
-		if existing.SelectElement("scm") == nil {
+		if switching && existing.SelectElement("scm") == nil {
 			return errors.New("patch.definition: an scm definition needs the job's SCM, and this job has none; configure the SCM in Jenkins first")
 		}
 		if switching && def.ScriptPath == nil {

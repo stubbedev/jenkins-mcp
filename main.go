@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -310,10 +311,14 @@ func resolveJobPath(ctx context.Context, arg string) (string, error) {
 	case 1:
 		return matches[0], nil
 	default:
-		if picked, ok := elicitJobPath(ctx, matches); ok {
-			return picked, nil
+		picked, err := elicitJobPath(ctx, matches)
+		if err != nil {
+			return "", fmt.Errorf("multiple Jenkins jobs map to this repo (%s), and asking which one failed: %w. Pass jobPath explicitly", strings.Join(matches, ", "), err)
 		}
-		return "", fmt.Errorf("multiple Jenkins jobs map to this repo (%s). Pass jobPath explicitly", strings.Join(matches, ", "))
+		if picked == "" {
+			return "", fmt.Errorf("multiple Jenkins jobs map to this repo (%s). Pass jobPath explicitly", strings.Join(matches, ", "))
+		}
+		return picked, nil
 	}
 }
 
@@ -332,7 +337,10 @@ func resolveJobMatches(ctx context.Context) ([]string, error) {
 		return matchesForWorkTree(ctx, fmt.Sprintf("working directory %q", dir))
 	}
 
-	roots := rootsForSession(ctx)
+	roots, err := rootsForSession(ctx)
+	if err != nil {
+		return nil, err
+	}
 	if len(roots) == 0 {
 		return matchesForWorkTree(ctx, "the server's working directory")
 	}
@@ -389,7 +397,11 @@ func revisionWorkTree(ctx context.Context) (context.Context, error) {
 	if cwdFromContext(ctx) != "" {
 		return ctx, nil
 	}
-	for _, root := range rootsForSession(ctx) {
+	roots, err := rootsForSession(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, root := range roots {
 		if !isRepoDir(root) {
 			continue
 		}
@@ -446,19 +458,13 @@ func resolveRevision(ctx context.Context, remote, branch, rev string) (gitRevisi
 	return gitRevision{remote: remote, branch: branch, sha: sha}, nil
 }
 
-// elicitJobPath asks the connected client to choose one of matches via an MCP
-// elicitation prompt. Returns (picked, true) only when the user accepts a valid
-// choice; any error, decline, cancel, or unsupported client yields ("", false).
-func elicitJobPath(ctx context.Context, matches []string) (string, bool) {
+func elicitJobPath(ctx context.Context, matches []string) (string, error) {
 	ss := sessionFromContext(ctx)
 	if ss == nil {
-		return "", false
+		return "", nil
 	}
-	// Only send an elicitation if the client declared support for it. Without
-	// this gate the stdio session would send the request and block forever
-	// waiting on a client that never replies.
 	if ip := ss.InitializeParams(); ip == nil || ip.Capabilities == nil || ip.Capabilities.Elicitation == nil {
-		return "", false
+		return "", nil
 	}
 	schema := map[string]any{
 		"type": "object",
@@ -476,20 +482,23 @@ func elicitJobPath(ctx context.Context, matches []string) (string, bool) {
 		Message:         "Multiple Jenkins jobs map to this repo. Which one?",
 		RequestedSchema: schema,
 	})
-	if err != nil || res == nil || res.Action != "accept" {
-		return "", false
+	if err != nil {
+		return "", err
+	}
+	switch res.Action {
+	case "accept":
+	case "decline":
+		return "", errors.New("the user declined to choose")
+	case "cancel":
+		return "", errors.New("the user cancelled the choice")
+	default:
+		return "", fmt.Errorf("the client answered with action %q", res.Action)
 	}
 	picked, ok := res.Content["jobPath"].(string)
-	if !ok || picked == "" {
-		return "", false
+	if !ok || !slices.Contains(matches, picked) {
+		return "", fmt.Errorf("the client answered %s, which is not one of the offered jobs", showJSON(res.Content["jobPath"]))
 	}
-	// Guard against a client returning a value outside the enum.
-	for _, m := range matches {
-		if m == picked {
-			return picked, true
-		}
-	}
-	return "", false
+	return picked, nil
 }
 
 func buildRefArg(v any) string {

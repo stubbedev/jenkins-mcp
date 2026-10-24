@@ -2,8 +2,9 @@ package main
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"net/url"
-	"strings"
 	"sync"
 	"time"
 
@@ -25,59 +26,37 @@ type rootsEntry struct {
 	paths []string // local filesystem paths decoded from file:// root URIs
 }
 
-// rootsForSession returns every filesystem root the caller exposed via MCP
-// roots, or nil when roots are unavailable or unsupported. Results are cached
-// per session and refreshed on a list_changed notification. Callers decide what
-// to do with multiple roots (see resolveJobPath's per-root matching).
-func rootsForSession(ctx context.Context) []string {
+func rootsForSession(ctx context.Context) ([]string, error) {
 	ss := sessionFromContext(ctx)
-	if ss == nil {
-		return nil
+	if ss == nil || !rootsAskable(ss) || !clientDeclaresRoots(ss.InitializeParams()) {
+		return nil, nil
 	}
-
 	sid := ss.ID()
 	if cached, ok := rootsCache.Load(sid); ok {
-		return cached.(rootsEntry).paths
-	}
-
-	paths, ok := fetchRoots(ctx, ss)
-	// Cache only a definitive answer (success, including a legit empty list).
-	// A transport error / timeout is left uncached so the next call retries
-	// rather than poisoning the session until a list_changed that may never come.
-	if ok {
-		rootsCache.Store(sid, rootsEntry{paths: paths})
-	}
-	return paths
-}
-
-// fetchRoots performs the roots/list round-trip (bounded by rootsTimeout) and
-// decodes the file:// URIs to local paths. The bool is false on a transport
-// error or timeout, or a client that does not support roots (caller should not
-// cache it); true on a definitive answer, even if the client reports zero roots.
-//
-// ponytail: no capability pre-check — the SDK returns method-not-found fast for
-// clients without roots, and rootsTimeout bounds the slow case. Add a gate only
-// if a non-conforming client (declares nothing, never replies) shows up. The
-// protocol-version check below is not that gate: from MCP 2026-07-28 the call
-// is refused locally by the SDK, so there is nothing to ask and nothing worth
-// caching — those clients pin the workspace with X-Repo-Root instead.
-func fetchRoots(ctx context.Context, ss *mcp.ServerSession) ([]string, bool) {
-	if !rootsAskable(ss) {
-		return nil, false
+		return cached.(rootsEntry).paths, nil
 	}
 	cctx, cancel := context.WithTimeout(ctx, rootsTimeout)
 	defer cancel()
 	res, err := ss.ListRoots(cctx, &mcp.ListRootsParams{})
-	if err != nil || res == nil {
-		return nil, false
+	if err != nil {
+		return nil, fmt.Errorf("asking the client for its workspace roots (roots/list): %w", err)
 	}
-	var paths []string
+	paths := make([]string, 0, len(res.Roots))
 	for _, r := range res.Roots {
-		if p := fileURIToPath(r.URI); p != "" {
+		p, local, err := fileURIToPath(r.URI)
+		if err != nil {
+			return nil, fmt.Errorf("workspace root %q from roots/list: %w", r.URI, err)
+		}
+		if local {
 			paths = append(paths, p)
 		}
 	}
-	return paths, true
+	rootsCache.Store(sid, rootsEntry{paths: paths})
+	return paths, nil
+}
+
+func clientDeclaresRoots(ip *mcp.InitializeParams) bool {
+	return ip != nil && ip.Capabilities != nil && ip.Capabilities.RootsV2 != nil
 }
 
 // invalidateRoots drops the cached roots for the session so the next lookup
@@ -88,20 +67,22 @@ func invalidateRoots(ss *mcp.ServerSession) {
 	}
 }
 
-// fileURIToPath converts a file:// URI to a local filesystem path, returning ""
-// for any other scheme. A bare path (no scheme) is returned as-is.
-func fileURIToPath(uri string) string {
-	if uri == "" {
-		return ""
-	}
-	if !strings.Contains(uri, "://") {
-		return uri
-	}
+func fileURIToPath(uri string) (string, bool, error) {
 	u, err := url.Parse(uri)
-	if err != nil || u.Scheme != "file" {
-		return ""
+	if err != nil {
+		return "", false, err
 	}
-	return u.Path
+	switch {
+	case u.Scheme == "":
+		return "", false, errors.New("roots must be URIs; a bare path is not one")
+	case u.Scheme != "file":
+		return "", false, nil
+	case u.Host != "" && u.Host != "localhost":
+		return "", false, fmt.Errorf("file URI on host %q is not a local path", u.Host)
+	case u.Path == "":
+		return "", false, errors.New("file URI has no path")
+	}
+	return u.Path, true, nil
 }
 
 // rootsRemovedFrom is the first protocol revision that forbids server-initiated

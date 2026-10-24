@@ -15,7 +15,17 @@ import (
 // connectTest wires an in-memory MCP client to the real server (built by
 // newServer) so the full tools/list + tools/call path — schema passthrough,
 // dispatch, arg normalization, result wrapping — is exercised end to end.
-func connectTest(t *testing.T) *mcp.ClientSession {
+func connectTest(t *testing.T, roots ...*mcp.Root) *mcp.ClientSession {
+	t.Helper()
+	if len(roots) == 0 {
+		return connectClient(t, mcp.NewClient(&mcp.Implementation{Name: "test", Version: "0"}, nil), nil)
+	}
+	client := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "0"}, nil)
+	client.AddRoots(roots...)
+	return connectClient(t, client, &mcp.ClientSessionOptions{ProtocolVersion: "2025-11-25"})
+}
+
+func connectClient(t *testing.T, client *mcp.Client, opts *mcp.ClientSessionOptions) *mcp.ClientSession {
 	t.Helper()
 	ctx := context.Background()
 	server := newServer("test instructions")
@@ -23,8 +33,7 @@ func connectTest(t *testing.T) *mcp.ClientSession {
 	if _, err := server.Connect(ctx, serverT, nil); err != nil {
 		t.Fatalf("server connect: %v", err)
 	}
-	client := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "0"}, nil)
-	cs, err := client.Connect(ctx, clientT, nil)
+	cs, err := client.Connect(ctx, clientT, opts)
 	if err != nil {
 		t.Fatalf("client connect: %v", err)
 	}
@@ -266,5 +275,61 @@ func TestJobPathResolutionExplainsWhyNothingMatched(t *testing.T) {
 	}
 	if want := "the origin remote git@host:team/unmapped.git of working directory " + strconv.Quote(dir) + " matches no repoJobMap entry"; !res.IsError || !strings.Contains(resultText(res), want) {
 		t.Errorf("want %q, got %q", want, resultText(res))
+	}
+}
+
+func TestBadWorkspaceRootFailsInsteadOfFallingBack(t *testing.T) {
+	saved := jenkins
+	jenkins = NewJenkinsClient(Config{URL: "http://127.0.0.1:1", Username: "u", Token: "t", RepoJobMap: map[string][]string{"x": {"j"}}})
+	t.Cleanup(func() { jenkins = saved })
+
+	res, err := connectTest(t, &mcp.Root{URI: "file://buildhost/srv/repo"}).CallTool(context.Background(), &mcp.CallToolParams{Name: "jenkins_list_builds", Arguments: map[string]any{}})
+	if err != nil {
+		t.Fatalf("CallTool: %v", err)
+	}
+	if want := `workspace root "file://buildhost/srv/repo" from roots/list: file URI on host "buildhost" is not a local path`; !res.IsError || !strings.Contains(resultText(res), want) {
+		t.Errorf("want %q, got %q", want, resultText(res))
+	}
+
+	dir := t.TempDir()
+	res, err = connectTest(t, &mcp.Root{URI: "file://" + dir}).CallTool(context.Background(), &mcp.CallToolParams{Name: "jenkins_list_builds", Arguments: map[string]any{}})
+	if err != nil {
+		t.Fatalf("CallTool: %v", err)
+	}
+	if want := "root " + strconv.Quote(dir) + " is not a git repository"; !res.IsError || !strings.Contains(resultText(res), want) {
+		t.Errorf("want %q, got %q", want, resultText(res))
+	}
+}
+
+func TestJobChoiceFailuresAreReported(t *testing.T) {
+	dir := t.TempDir()
+	ctx := withCwd(context.Background(), dir)
+	for _, args := range [][]string{{"init", "-q"}, {"remote", "add", "origin", "git@host:team/app.git"}} {
+		if _, err := runGit(ctx, args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	saved := jenkins
+	jenkins = NewJenkinsClient(Config{URL: "http://127.0.0.1:1", Username: "u", Token: "t", RepoJobMap: map[string][]string{"team/app": {"app-ci", "app-nightly"}}})
+	t.Cleanup(func() { jenkins = saved })
+
+	for name, c := range map[string]struct {
+		result *mcp.ElicitResult
+		want   string
+	}{
+		"declined":      {&mcp.ElicitResult{Action: "decline"}, "asking which one failed: the user declined to choose"},
+		"invalid value": {&mcp.ElicitResult{Action: "accept", Content: map[string]any{"jobPath": "other"}}, "asking which one failed: calling \"elicitation/create\": elicitation result content does not match requested schema"},
+	} {
+		client := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "0"}, &mcp.ClientOptions{
+			ElicitationHandler: func(context.Context, *mcp.ElicitRequest) (*mcp.ElicitResult, error) { return c.result, nil },
+		})
+		cs := connectClient(t, client, &mcp.ClientSessionOptions{ProtocolVersion: "2025-11-25"})
+		res, err := cs.CallTool(context.Background(), &mcp.CallToolParams{Name: "jenkins_list_builds", Arguments: map[string]any{"cwd": dir}})
+		if err != nil {
+			t.Fatalf("%s: CallTool: %v", name, err)
+		}
+		if !res.IsError || !strings.Contains(resultText(res), c.want) {
+			t.Errorf("%s: want %q, got %q", name, c.want, resultText(res))
+		}
 	}
 }

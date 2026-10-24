@@ -506,7 +506,10 @@ func parseGitSCM(e *etree.Element) SCMConfig {
 
 func redactRemoteURL(raw string) string {
 	u, err := url.Parse(raw)
-	if err != nil || u.User == nil {
+	if err != nil {
+		return redactUnparsableURL(raw)
+	}
+	if u.User == nil {
 		return raw
 	}
 	if _, hasPassword := u.User.Password(); hasPassword {
@@ -573,6 +576,23 @@ func writableTriggerContainer(root *etree.Element) *etree.Element {
 		root.RemoveChild(legacy)
 	}
 	return trig
+}
+
+func redactUnparsableURL(raw string) string {
+	scheme := strings.Index(raw, "://")
+	if scheme < 0 {
+		return raw
+	}
+	rest := raw[scheme+3:]
+	authority := rest
+	if end := strings.IndexAny(rest, "/?#"); end >= 0 {
+		authority = rest[:end]
+	}
+	at := strings.LastIndex(authority, "@")
+	if at < 0 {
+		return raw
+	}
+	return raw[:scheme+3] + redactedUserinfo + rest[at:]
 }
 
 func scmTriggers(root *etree.Element) []*etree.Element {

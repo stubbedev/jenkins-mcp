@@ -255,6 +255,8 @@ func TestRedactRemoteURL(t *testing.T) {
 		"git@host:o/r.git":                 "git@host:o/r.git",
 		"https://git.example.com/k.git":    "https://git.example.com/k.git",
 		"file:///srv/git/r.git":            "file:///srv/git/r.git",
+		"https://u:p@ho st/r.git":          "https://xxxxx@ho st/r.git",
+		"https://tok@host:bad/r.git":       "https://xxxxx@host:bad/r.git",
 	}
 	for in, want := range cases {
 		if got := redactRemoteURL(in); got != want {

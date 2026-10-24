@@ -18,7 +18,7 @@
   "scripts": {
     "postinstall": "node scripts/postinstall.mjs",
     "build": "go build -o jenkins-mcp .",
-    "test": "go test ./...",
+    "test": "go test -race ./... && node --test 'scripts/*.test.mjs'",
     "smoke": "go build -o jenkins-mcp . && node scripts/smoke.mjs",
     "preversion": "go vet ./... && npm run test && npm run smoke",
     "release:patch": "npm version patch && git push origin HEAD --follow-tags",

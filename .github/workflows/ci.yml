@@ -26,11 +26,21 @@ jobs:
       - name: Vet
         run: go vet ./...
 
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+
       - name: Test
-        run: go test ./...
+        run: go test -race ./...
 
       - name: Build
         run: go build -o jenkins-mcp .
+
+      - name: Smoke test
+        run: node scripts/smoke.mjs
+
+      - name: Node tests
+        run: node --test 'scripts/*.test.mjs'
 
       # The Composer launcher only runs on users' machines, so lint it here.
       - name: Composer package

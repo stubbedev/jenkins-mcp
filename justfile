@@ -7,7 +7,7 @@ build:
 
 # Run tests.
 test:
-    go test ./...
+    npm test
 
 # Format. gofmt is the whole formatter here: no golangci config in this repo, so
 # `just check` gates on gofmt + vet, exactly like ci.yml does.
@@ -29,8 +29,10 @@ check:
         exit 1
     fi
     go vet ./...
-    go test ./...
+    go test -race ./...
     go build -o jenkins-mcp .
+    node scripts/smoke.mjs
+    node --test 'scripts/*.test.mjs'
 
 nix-build:
     nix build .#default -L

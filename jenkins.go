@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -216,45 +217,68 @@ func NewJenkinsClient(cfg Config) *JenkinsClient {
 	}
 }
 
-// requestJSON performs a GET and decodes the JSON response into dest.
-func (c *JenkinsClient) requestJSON(ctx context.Context, path string, dest any, timeout time.Duration) error {
-	body, err := c.requestRaw(ctx, "GET", path, "application/json", timeout)
-	if err != nil {
-		return err
-	}
-	if len(body) == 0 {
-		return nil
-	}
-	return json.Unmarshal(body, dest)
+func pathWithoutQuery(path string) string {
+	p, _, _ := strings.Cut(path, "?")
+	return p
 }
 
-// requestRaw performs a GET and returns the raw response body. accept sets the
-// Accept header. Non-2xx responses are turned into a formatted error.
-func (c *JenkinsClient) requestRaw(ctx context.Context, method, path, accept string, timeout time.Duration) ([]byte, error) {
-	full := path
-	if !strings.HasPrefix(path, "http") {
-		full = c.baseURL + path
-	}
-	if timeout == 0 {
-		timeout = requestTimeout
-	}
-	ctx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, method, full, nil)
+func (c *JenkinsClient) send(ctx context.Context, method, path, accept string, body io.Reader, header http.Header) (*http.Response, []byte, error) {
+	req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, body)
 	if err != nil {
-		return nil, err
+		return nil, nil, fmt.Errorf("%s %s: building the request: %w", method, pathWithoutQuery(path), err)
+	}
+	for k, vs := range header {
+		req.Header[k] = vs
 	}
 	req.Header.Set("Authorization", c.authHeader)
 	req.Header.Set("Accept", accept)
 	req.Header.Set("User-Agent", userAgent)
 	res, err := c.http.Do(req)
 	if err != nil {
-		return nil, err
+		var ue *url.Error
+		if errors.As(err, &ue) {
+			err = ue.Err
+		}
+		return nil, nil, fmt.Errorf("%s %s: %w", method, pathWithoutQuery(path), err)
 	}
 	defer res.Body.Close()
-	body, _ := io.ReadAll(res.Body)
+	data, err := io.ReadAll(res.Body)
+	if err != nil {
+		return nil, nil, fmt.Errorf("%s %s: reading the response: %w", method, pathWithoutQuery(path), err)
+	}
+	return res, data, nil
+}
+
+func statusError(status int, method, path string, body []byte) *apiError {
+	return &apiError{status: status, message: formatJenkinsError(status, method, path, string(body)), body: string(body)}
+}
+
+func (c *JenkinsClient) requestJSON(ctx context.Context, path string, dest any, timeout time.Duration) error {
+	body, err := c.requestRaw(ctx, "GET", path, "application/json", timeout)
+	if err != nil {
+		return err
+	}
+	if len(bytes.TrimSpace(body)) == 0 {
+		return fmt.Errorf("GET %s: Jenkins returned an empty body where JSON was expected", pathWithoutQuery(path))
+	}
+	if err := json.Unmarshal(body, dest); err != nil {
+		return fmt.Errorf("GET %s: decoding the JSON response: %w", pathWithoutQuery(path), err)
+	}
+	return nil
+}
+
+func (c *JenkinsClient) requestRaw(ctx context.Context, method, path, accept string, timeout time.Duration) ([]byte, error) {
+	if timeout == 0 {
+		timeout = requestTimeout
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	res, body, err := c.send(ctx, method, path, accept, nil, nil)
+	if err != nil {
+		return nil, err
+	}
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
-		return nil, &apiError{status: res.StatusCode, message: formatJenkinsError(res.StatusCode, method, path, string(body)), body: string(body)}
+		return nil, statusError(res.StatusCode, method, path, body)
 	}
 	return body, nil
 }
@@ -274,60 +298,57 @@ func (c *JenkinsClient) checkConnection(ctx context.Context) error {
 	return nil
 }
 
-func (c *JenkinsClient) fetchCrumb(ctx context.Context) *crumb {
+func (c *JenkinsClient) fetchCrumb(ctx context.Context) (*crumb, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.crumbTried {
-		return c.crumbCache
+		return c.crumbCache, nil
 	}
-	c.crumbTried = true
 	var data struct {
 		CrumbRequestField string `json:"crumbRequestField"`
 		Crumb             string `json:"crumb"`
 	}
-	if err := c.requestJSON(ctx, "/crumbIssuer/api/json", &data, 0); err == nil && data.Crumb != "" {
-		c.crumbCache = &crumb{headerName: data.CrumbRequestField, value: data.Crumb}
+	err := c.requestJSON(ctx, "/crumbIssuer/api/json", &data, 0)
+	switch {
+	case isStatus(err, http.StatusNotFound):
+		c.crumbTried = true
+		return nil, nil
+	case err != nil:
+		return nil, fmt.Errorf("fetching a CSRF crumb: %w", err)
+	case data.Crumb == "" || data.CrumbRequestField == "":
+		return nil, errors.New("fetching a CSRF crumb: /crumbIssuer/api/json returned no crumb or crumbRequestField")
 	}
-	return c.crumbCache
+	c.crumbTried = true
+	c.crumbCache = &crumb{headerName: data.CrumbRequestField, value: data.Crumb}
+	return c.crumbCache, nil
 }
 
-// post issues a POST with an optional form body or XML body. Returns the
-// Location response header when present (e.g. queue item URL).
 func (c *JenkinsClient) post(ctx context.Context, path string, form url.Values, xml string) (string, error) {
-	cr := c.fetchCrumb(ctx)
-	full := c.baseURL + path
-	var bodyReader io.Reader
-	contentType := ""
-	if xml != "" {
-		bodyReader = strings.NewReader(xml)
-		contentType = "application/xml"
-	} else if len(form) > 0 {
-		bodyReader = strings.NewReader(form.Encode())
-		contentType = "application/x-www-form-urlencoded"
+	cr, err := c.fetchCrumb(ctx)
+	if err != nil {
+		return "", fmt.Errorf("POST %s: %w", pathWithoutQuery(path), err)
+	}
+	header := http.Header{}
+	var body io.Reader
+	switch {
+	case xml != "":
+		body = strings.NewReader(xml)
+		header.Set("Content-Type", "application/xml")
+	case len(form) > 0:
+		body = strings.NewReader(form.Encode())
+		header.Set("Content-Type", "application/x-www-form-urlencoded")
+	}
+	if cr != nil {
+		header.Set(cr.headerName, cr.value)
 	}
 	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, "POST", full, bodyReader)
+	res, data, err := c.send(ctx, "POST", path, "application/json", body, header)
 	if err != nil {
 		return "", err
 	}
-	req.Header.Set("Authorization", c.authHeader)
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("User-Agent", userAgent)
-	if contentType != "" {
-		req.Header.Set("Content-Type", contentType)
-	}
-	if cr != nil {
-		req.Header.Set(cr.headerName, cr.value)
-	}
-	res, err := c.http.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer res.Body.Close()
-	body, _ := io.ReadAll(res.Body)
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
-		return "", &apiError{status: res.StatusCode, message: formatJenkinsError(res.StatusCode, "POST", path, string(body))}
+		return "", statusError(res.StatusCode, "POST", path, data)
 	}
 	return res.Header.Get("Location"), nil
 }
@@ -419,19 +440,22 @@ func (c *JenkinsClient) getConsoleLog(ctx context.Context, jobPath string, build
 	// Tail requested: ask for just the last tailChars bytes via an HTTP Range
 	// request so multi-megabyte logs aren't pulled into memory whole. Servers
 	// that ignore Range (200) or reject it (416) fall back to a full download.
-	body, status, total, err := c.getRange(ctx, path, tailChars)
+	r, err := c.getRange(ctx, path, tailChars)
 	if err != nil {
 		return "", err
 	}
-	if status == http.StatusPartialContent {
-		s := trimPartialRunePrefix(string(body))
-		if total > int64(len(s)) {
-			return fmt.Sprintf("... (truncated, last %d of %d bytes)\n", len(s), total) + s, nil
+	if r.status == http.StatusPartialContent {
+		s := trimPartialRunePrefix(string(r.body))
+		switch {
+		case r.total == unknownTotal:
+			return fmt.Sprintf("... (truncated, last %d bytes; Jenkins did not report the full size)\n", len(s)) + s, nil
+		case r.total > int64(len(s)):
+			return fmt.Sprintf("... (truncated, last %d of %d bytes)\n", len(s), r.total) + s, nil
 		}
 		return s, nil
 	}
-	if status == http.StatusOK {
-		s := string(body)
+	if r.status == http.StatusOK {
+		s := string(r.body)
 		if len(s) > tailChars {
 			return fmt.Sprintf("... (truncated, last %d of %d chars)\n", tailChars, len(s)) + s[len(s)-tailChars:], nil
 		}
@@ -445,33 +469,34 @@ func (c *JenkinsClient) getConsoleLog(ctx context.Context, jobPath string, build
 	return string(full), nil
 }
 
-// getRange issues a GET for the last lastN bytes of path. It returns the body,
-// the HTTP status (200, 206, or 416), and the total size parsed from any
-// Content-Range header. Non-2xx statuses other than 416 are returned as errors.
-func (c *JenkinsClient) getRange(ctx context.Context, path string, lastN int) ([]byte, int, int64, error) {
+type rangeResult struct {
+	body   []byte
+	status int
+	total  int64
+}
+
+const unknownTotal = -1
+
+func (c *JenkinsClient) getRange(ctx context.Context, path string, lastN int) (rangeResult, error) {
 	ctx, cancel := context.WithTimeout(ctx, logRequestTimeout)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, "GET", c.baseURL+path, nil)
+	res, body, err := c.send(ctx, "GET", path, "text/plain", nil, http.Header{"Range": {fmt.Sprintf("bytes=-%d", lastN)}})
 	if err != nil {
-		return nil, 0, 0, err
+		return rangeResult{}, err
 	}
-	req.Header.Set("Authorization", c.authHeader)
-	req.Header.Set("Accept", "text/plain")
-	req.Header.Set("User-Agent", userAgent)
-	req.Header.Set("Range", fmt.Sprintf("bytes=-%d", lastN))
-	res, err := c.http.Do(req)
-	if err != nil {
-		return nil, 0, 0, err
-	}
-	defer res.Body.Close()
-	body, _ := io.ReadAll(res.Body)
 	switch res.StatusCode {
-	case http.StatusOK, http.StatusPartialContent:
-		return body, res.StatusCode, parseContentRangeTotal(res.Header.Get("Content-Range")), nil
+	case http.StatusOK:
+		return rangeResult{body: body, status: res.StatusCode, total: int64(len(body))}, nil
+	case http.StatusPartialContent:
+		total, err := parseContentRangeTotal(res.Header.Get("Content-Range"))
+		if err != nil {
+			return rangeResult{}, fmt.Errorf("GET %s: %w", path, err)
+		}
+		return rangeResult{body: body, status: res.StatusCode, total: total}, nil
 	case http.StatusRequestedRangeNotSatisfiable:
-		return nil, res.StatusCode, 0, nil
+		return rangeResult{status: res.StatusCode}, nil
 	default:
-		return nil, res.StatusCode, 0, &apiError{status: res.StatusCode, message: formatJenkinsError(res.StatusCode, "GET", path, string(body))}
+		return rangeResult{}, statusError(res.StatusCode, "GET", path, body)
 	}
 }
 
@@ -965,11 +990,7 @@ func (c *JenkinsClient) notifyCommitError(err error) error {
 		}
 		return &apiError{status: ae.status, message: msg, body: ae.body}
 	}
-	var ue *url.Error
-	if errors.As(err, &ue) {
-		return fmt.Errorf("GET /git/notifyCommit: %w", ue.Err)
-	}
-	return fmt.Errorf("GET /git/notifyCommit: %w", err)
+	return err
 }
 
 func (c *JenkinsClient) getJobConfigTool(ctx context.Context, jobPath string, format outputFormat) (string, error) {
@@ -1267,18 +1288,20 @@ func indent(s, prefix string) string {
 	return strings.Join(parts, "\n")
 }
 
-// parseContentRangeTotal extracts the total size from a Content-Range header
-// like "bytes 1000-1999/12345", returning 0 when absent or unparseable.
-func parseContentRangeTotal(h string) int64 {
-	i := strings.LastIndex(h, "/")
-	if i < 0 {
-		return 0
+func parseContentRangeTotal(h string) (int64, error) {
+	rng, ok := strings.CutPrefix(strings.TrimSpace(h), "bytes ")
+	i := strings.LastIndex(rng, "/")
+	if !ok || i < 0 {
+		return 0, fmt.Errorf("206 response with an invalid Content-Range %q", h)
 	}
-	n, err := strconv.ParseInt(strings.TrimSpace(h[i+1:]), 10, 64)
-	if err != nil {
-		return 0
+	if total := strings.TrimSpace(rng[i+1:]); total == "*" {
+		return unknownTotal, nil
 	}
-	return n
+	n, err := strconv.ParseInt(strings.TrimSpace(rng[i+1:]), 10, 64)
+	if err != nil || n < 0 {
+		return 0, fmt.Errorf("206 response with an invalid Content-Range %q", h)
+	}
+	return n, nil
 }
 
 // trimPartialRunePrefix drops leading UTF-8 continuation bytes so a byte-range

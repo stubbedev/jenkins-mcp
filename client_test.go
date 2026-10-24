@@ -352,3 +352,90 @@ func TestGetBuildByShaReportsScanCoverage(t *testing.T) {
 		}
 	}
 }
+
+func TestRequestJSONFailsLoudly(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/empty", func(w http.ResponseWriter, r *http.Request) {})
+	mux.HandleFunc("/garbage", func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, "<html>proxy login</html>") })
+	mux.HandleFunc("/short", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", "100")
+		fmt.Fprint(w, `{"id":`)
+	})
+	c, srv := newTestClient(mux)
+	defer srv.Close()
+	var v map[string]any
+	for path, want := range map[string]string{
+		"/empty":   "GET /empty: Jenkins returned an empty body where JSON was expected",
+		"/garbage": "GET /garbage: decoding the JSON response",
+		"/short":   "GET /short: reading the response",
+	} {
+		if err := c.requestJSON(context.Background(), path+"?tree=x", &v, 0); err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%s: want error containing %q, got %v", path, want, err)
+		}
+	}
+}
+
+func TestTransportErrorsOmitTheQueryString(t *testing.T) {
+	c := NewJenkinsClient(Config{URL: "http://127.0.0.1:1", Username: "u", Token: "t"})
+	_, err := c.requestRaw(context.Background(), "GET", "/git/notifyCommit?token=s3cret&url=x", "text/plain", 0)
+	if err == nil || strings.Contains(err.Error(), "s3cret") || !strings.Contains(err.Error(), "GET /git/notifyCommit:") {
+		t.Errorf("want a transport error naming the path without its query, got %v", err)
+	}
+}
+
+func TestCrumbFailuresAreReportedAndRetried(t *testing.T) {
+	var crumbHits int
+	status := http.StatusInternalServerError
+	mux := http.NewServeMux()
+	mux.HandleFunc("/crumbIssuer/api/json", func(w http.ResponseWriter, r *http.Request) {
+		crumbHits++
+		w.WriteHeader(status)
+	})
+	mux.HandleFunc("/job/demo/build", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusCreated) })
+	c, srv := newTestClient(mux)
+	defer srv.Close()
+
+	if _, err := c.triggerBuildTool(context.Background(), "demo", nil); err == nil || !strings.Contains(err.Error(), "fetching a CSRF crumb") {
+		t.Fatalf("a failing crumb issuer must fail the POST, got %v", err)
+	}
+	status = http.StatusNotFound
+	for range 2 {
+		if _, err := c.triggerBuildTool(context.Background(), "demo", nil); err != nil {
+			t.Fatalf("no crumb issuer (CSRF protection off) must not block the POST: %v", err)
+		}
+	}
+	if crumbHits != 2 {
+		t.Errorf("crumb issuer hit %d times; want one failed and one cached 404 lookup", crumbHits)
+	}
+}
+
+func TestConsoleTailHandlesContentRange(t *testing.T) {
+	cases := map[string]string{
+		"bytes 90-99/*":   "last 10 bytes; Jenkins did not report the full size",
+		"bytes 90-99/100": "last 10 of 100 bytes",
+	}
+	for header, want := range cases {
+		mux := http.NewServeMux()
+		mux.HandleFunc("/job/demo/1/consoleText", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Range", header)
+			w.WriteHeader(http.StatusPartialContent)
+			fmt.Fprint(w, "0123456789")
+		})
+		c, srv := newTestClient(mux)
+		out, err := c.getConsoleLog(context.Background(), "demo", 1, 10)
+		srv.Close()
+		if err != nil || !strings.Contains(out, want) {
+			t.Errorf("Content-Range %q: got %q, %v; want %q", header, out, err, want)
+		}
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/job/demo/1/consoleText", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusPartialContent)
+		fmt.Fprint(w, "x")
+	})
+	c, srv := newTestClient(mux)
+	defer srv.Close()
+	if _, err := c.getConsoleLog(context.Background(), "demo", 1, 10); err == nil || !strings.Contains(err.Error(), "invalid Content-Range") {
+		t.Errorf("206 without Content-Range: want error, got %v", err)
+	}
+}

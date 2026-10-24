@@ -156,3 +156,17 @@ func TestParsePatchRejectsUnknownFields(t *testing.T) {
 		}
 	}
 }
+
+func TestPackageVersion(t *testing.T) {
+	if v, err := packageVersion([]byte(`{"version": "1.2.3-rc.1"}`)); err != nil || v != "1.2.3-rc.1" {
+		t.Errorf("packageVersion = %q, %v", v, err)
+	}
+	for _, bad := range []string{`{}`, `{"version": ""}`, `{"version": "v1.2"}`, `not json`} {
+		if _, err := packageVersion([]byte(bad)); err == nil {
+			t.Errorf("packageVersion(%s): want an error instead of a fallback version", bad)
+		}
+	}
+	if Version == "" {
+		t.Error("the embedded package.json version must be set")
+	}
+}

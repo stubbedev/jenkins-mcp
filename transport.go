@@ -136,7 +136,9 @@ func serveHTTP(s *mcp.Server, tc transportConfig) error {
 		logErr("[jenkins-mcp] shutting down HTTP server")
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		_ = httpServer.Shutdown(ctx)
+		if err := httpServer.Shutdown(ctx); err != nil {
+			logErr("[jenkins-mcp] HTTP shutdown did not drain cleanly: " + err.Error())
+		}
 	}()
 
 	mode := "stateful"

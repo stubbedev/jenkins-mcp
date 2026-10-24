@@ -3,6 +3,8 @@ package main
 import (
 	_ "embed"
 	"encoding/json"
+	"fmt"
+	"regexp"
 )
 
 // packageJSON is embedded so the binary's version is sourced from the single
@@ -13,16 +15,30 @@ import (
 //go:embed package.json
 var packageJSON []byte
 
-// Version is the server version, read from the embedded package.json at startup.
-var Version = func() string {
+var Version = mustPackageVersion(packageJSON)
+
+func mustPackageVersion(data []byte) string {
+	v, err := packageVersion(data)
+	if err != nil {
+		panic("embedded package.json: " + err.Error())
+	}
+	return v
+}
+
+func packageVersion(data []byte) (string, error) {
 	var p struct {
 		Version string `json:"version"`
 	}
-	if err := json.Unmarshal(packageJSON, &p); err == nil && p.Version != "" {
-		return p.Version
+	if err := json.Unmarshal(data, &p); err != nil {
+		return "", err
 	}
-	return "dev"
-}()
+	if !semverCore.MatchString(p.Version) {
+		return "", fmt.Errorf("version %q is not a semantic version", p.Version)
+	}
+	return p.Version, nil
+}
+
+var semverCore = regexp.MustCompile(`^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$`)
 
 // userAgent is sent on every Jenkins request — identifies the client and avoids
 // the Go default ("Go-http-client/..."), which some WAFs/proxies reject.

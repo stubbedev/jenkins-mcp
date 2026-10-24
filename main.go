@@ -331,8 +331,8 @@ func resolveJobPath(ctx context.Context, arg string) (string, error) {
 // union is returned for elicitation.
 func resolveJobMatches(ctx context.Context) ([]string, error) {
 	if dir := cwdFromContext(ctx); dir != "" {
-		if !isRepoDir(dir) {
-			return nil, fmt.Errorf("working directory %q is not an absolute, existing directory — pass jobPath explicitly, or a valid cwd/repoRoot", dir)
+		if err := checkWorkDir(dir); err != nil {
+			return nil, fmt.Errorf("%w — pass jobPath explicitly, or a valid cwd/repoRoot", err)
 		}
 		return matchesForWorkTree(ctx, fmt.Sprintf("working directory %q", dir))
 	}
@@ -348,8 +348,8 @@ func resolveJobMatches(ctx context.Context) ([]string, error) {
 	seen := map[string]bool{}
 	var matches, notes []string
 	for _, root := range roots {
-		if !isRepoDir(root) {
-			notes = append(notes, fmt.Sprintf("root %q is not a local directory", root))
+		if err := checkWorkDir(root); err != nil {
+			notes = append(notes, fmt.Sprintf("root %q: %v", root, err))
 			continue
 		}
 		found, err := matchesForWorkTree(withCwd(ctx, root), fmt.Sprintf("root %q", root))
@@ -401,8 +401,13 @@ func revisionWorkTree(ctx context.Context) (context.Context, error) {
 	if err != nil {
 		return nil, err
 	}
+	if len(roots) == 0 {
+		return ctx, nil
+	}
+	notes := make([]string, 0, len(roots))
 	for _, root := range roots {
-		if !isRepoDir(root) {
+		if err := checkWorkDir(root); err != nil {
+			notes = append(notes, fmt.Sprintf("root %q: %v", root, err))
 			continue
 		}
 		rootCtx := withCwd(ctx, root)
@@ -413,15 +418,18 @@ func revisionWorkTree(ctx context.Context) (context.Context, error) {
 		if remote != "" {
 			return rootCtx, nil
 		}
+		notes = append(notes, fmt.Sprintf("root %q has no 'origin' remote", root))
 	}
-	return ctx, nil
+	return nil, fmt.Errorf("no workspace root is a git repository with an 'origin' remote (%s); pass url and sha, or cwd", strings.Join(notes, "; "))
 }
 
 var fullSHA = regexp.MustCompile(`^[0-9a-fA-F]{40}$`)
 
 func resolveRevision(ctx context.Context, remote, branch, rev string) (gitRevision, error) {
-	if dir := cwdFromContext(ctx); dir != "" && !isRepoDir(dir) {
-		return gitRevision{}, fmt.Errorf("working directory %q is not an absolute, existing directory — pass url and a full sha, or a valid cwd/repoRoot", dir)
+	if dir := cwdFromContext(ctx); dir != "" {
+		if err := checkWorkDir(dir); err != nil {
+			return gitRevision{}, fmt.Errorf("%w — pass url and a full sha, or a valid cwd/repoRoot", err)
+		}
 	}
 	if remote == "" {
 		origin, err := currentGitRemote(ctx)

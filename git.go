@@ -82,16 +82,18 @@ func isNotARepo(err error) bool {
 	return errors.As(err, &ge) && strings.Contains(ge.stderr, "not a git repository")
 }
 
-// isRepoDir reports whether dir is an absolute path to an existing directory —
-// a caller-supplied working tree must be both before git can run there. A
-// relative path is meaningless to a server process whose cwd the caller cannot
-// see, so it is rejected.
-func isRepoDir(dir string) bool {
-	if dir == "" || !filepath.IsAbs(dir) {
-		return false
+func checkWorkDir(dir string) error {
+	if !filepath.IsAbs(dir) {
+		return fmt.Errorf("working directory %q is not an absolute path", dir)
 	}
 	info, err := os.Stat(dir)
-	return err == nil && info.IsDir()
+	if err != nil {
+		return fmt.Errorf("working directory: %w", err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("working directory %q is not a directory", dir)
+	}
+	return nil
 }
 
 func currentGitRemote(ctx context.Context) (string, error) {

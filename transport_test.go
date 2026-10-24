@@ -205,25 +205,35 @@ func TestHTTPCwdFromHeaders(t *testing.T) {
 	}
 }
 
-func TestIsRepoDir(t *testing.T) {
+func TestCheckWorkDir(t *testing.T) {
 	dir := t.TempDir()
-	f := dir + "/file"
+	f := filepath.Join(dir, "file")
 	if err := os.WriteFile(f, []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	cases := []struct {
-		in   string
-		want bool
-	}{
-		{dir, true},            // existing absolute dir
-		{f, false},             // existing file, not a dir
-		{dir + "/nope", false}, // missing
-		{"relative/path", false},
-		{"", false},
+	locked := filepath.Join(dir, "locked")
+	if err := os.MkdirAll(filepath.Join(locked, "inner"), 0o755); err != nil {
+		t.Fatal(err)
 	}
-	for _, c := range cases {
-		if got := isRepoDir(c.in); got != c.want {
-			t.Errorf("isRepoDir(%q) = %v, want %v", c.in, got, c.want)
+	if err := os.Chmod(locked, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(locked, 0o755) })
+	if err := checkWorkDir(dir); err != nil {
+		t.Errorf("existing directory: %v", err)
+	}
+	cases := map[string]string{
+		f:                          "is not a directory",
+		filepath.Join(dir, "nope"): "no such file or directory",
+		"relative/path":            "is not an absolute path",
+		"":                         "is not an absolute path",
+	}
+	if os.Geteuid() != 0 {
+		cases[filepath.Join(locked, "inner")] = "permission denied"
+	}
+	for in, want := range cases {
+		if err := checkWorkDir(in); err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("checkWorkDir(%q): want error containing %q, got %v", in, want, err)
 		}
 	}
 }

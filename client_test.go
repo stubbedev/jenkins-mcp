@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func newTestClient(h http.Handler) (*JenkinsClient, *httptest.Server) {
@@ -481,5 +482,42 @@ func TestRepoMatchesAndCommitsAreDeterministic(t *testing.T) {
 		if got := extractCommit(actions); got != "aaa" {
 			t.Fatalf("extractCommit = %q, want the first branch by name", got)
 		}
+	}
+}
+
+func TestTruncationKeepsCharactersWhole(t *testing.T) {
+	s := strings.Repeat("é", 10)
+	if got := headBytes(s, 5); got != "éé" || !utf8.ValidString(got) {
+		t.Errorf("headBytes = %q", got)
+	}
+	if got := tailBytes(s, 5); got != "éé" || !utf8.ValidString(got) {
+		t.Errorf("tailBytes = %q", got)
+	}
+	if got := maybeTrim(s, 5); !strings.HasSuffix(got, "éé") || !strings.Contains(got, "last 4 of 20 bytes") || !utf8.ValidString(got) {
+		t.Errorf("maybeTrim = %q", got)
+	}
+	if got := truncLine("ünïcødé message\nsecond", 6); !utf8.ValidString(got) || strings.Contains(got, "second") {
+		t.Errorf("truncLine = %q", got)
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/job/demo/1/consoleText", func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, s) })
+	c, srv := newTestClient(mux)
+	defer srv.Close()
+	if out, err := c.getConsoleLog(context.Background(), "demo", 1, 5); err != nil || !utf8.ValidString(out) || !strings.HasSuffix(out, "éé") {
+		t.Errorf("a server ignoring Range: got %q, %v", out, err)
+	}
+}
+
+func TestShortCommitIDsAreShownAsIs(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/job/demo/3/api/json", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"number":3,"result":"SUCCESS","changeSets":[{"items":[{"commitId":"r1234","author":{"fullName":"A"},"msg":"svn change"}]}]}`)
+	})
+	c, srv := newTestClient(mux)
+	defer srv.Close()
+	out, err := c.getBuildOverview(context.Background(), buildOverviewArgs{jobPath: "demo", buildNumber: "3", includeChangeSet: true})
+	if err != nil || !strings.Contains(out, "r1234  A: svn change") {
+		t.Errorf("short commit id must be shown, got %v\n%s", err, out)
 	}
 }

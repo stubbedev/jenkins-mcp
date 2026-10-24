@@ -13,7 +13,6 @@ import (
 	"net/url"
 	"regexp"
 	"slices"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -459,7 +458,7 @@ func (c *JenkinsClient) getConsoleLog(ctx context.Context, jobPath string, build
 	if r.status == http.StatusOK {
 		s := string(r.body)
 		if len(s) > tailChars {
-			return fmt.Sprintf("... (truncated, last %d of %d chars)\n", tailChars, len(s)) + s[len(s)-tailChars:], nil
+			return maybeTrim(s, tailChars), nil
 		}
 		return s, nil
 	}
@@ -645,7 +644,7 @@ func (c *JenkinsClient) getBuildOverview(ctx context.Context, a buildOverviewArg
 			for _, p := range params {
 				v := p.value
 				if len(v) > 200 {
-					v = v[:200] + "..."
+					v = headBytes(v, 200) + "..."
 				}
 				l.add("  %s = %s", p.name, v)
 			}
@@ -686,10 +685,7 @@ func (c *JenkinsClient) getBuildOverview(ctx context.Context, a buildOverviewArg
 					l.add("  ... and %d more", len(items)-10)
 					break
 				}
-				short := "????????"
-				if len(it.CommitID) >= 8 {
-					short = it.CommitID[:8]
-				}
+				short := headBytes(it.CommitID, 8)
 				author := it.Author.FullName
 				if author == "" {
 					author = "unknown"
@@ -1214,19 +1210,24 @@ func shaPrefixMatches(target, candidate string) bool {
 	return t[:n] == c[:n]
 }
 
+var (
+	htmlTitle = regexp.MustCompile(`(?i)<title>([^<]+)</title>`)
+	htmlH1    = regexp.MustCompile(`(?i)<h1>([^<]+)</h1>`)
+)
+
 func parseJenkinsErrorBody(body string) string {
 	trimmed := strings.TrimSpace(body)
 	if trimmed == "" {
 		return ""
 	}
-	if m := regexp.MustCompile(`(?i)<title>([^<]+)</title>`).FindStringSubmatch(trimmed); m != nil {
+	if m := htmlTitle.FindStringSubmatch(trimmed); m != nil {
 		return strings.TrimSpace(m[1])
 	}
-	if m := regexp.MustCompile(`(?i)<h1>([^<]+)</h1>`).FindStringSubmatch(trimmed); m != nil {
+	if m := htmlH1.FindStringSubmatch(trimmed); m != nil {
 		return strings.TrimSpace(m[1])
 	}
 	if len(trimmed) > 400 {
-		return trimmed[:400] + "..."
+		return headBytes(trimmed, 400) + "..."
 	}
 	return trimmed
 }
@@ -1331,11 +1332,29 @@ func trimPartialRunePrefix(s string) string {
 	return s
 }
 
-func maybeTrim(s string, tailChars int) string {
-	if tailChars <= 0 || len(s) <= tailChars {
+func maybeTrim(s string, tailBytesMax int) string {
+	if tailBytesMax <= 0 || len(s) <= tailBytesMax {
 		return s
 	}
-	return fmt.Sprintf("... (truncated, last %d of %d chars)\n", tailChars, len(s)) + s[len(s)-tailChars:]
+	tail := tailBytes(s, tailBytesMax)
+	return fmt.Sprintf("... (truncated, last %d of %d bytes)\n", len(tail), len(s)) + tail
+}
+
+func headBytes(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n]
+}
+
+func tailBytes(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return trimPartialRunePrefix(s[len(s)-n:])
 }
 
 func firstLines(s string, n int) string {
@@ -1348,7 +1367,7 @@ func firstLines(s string, n int) string {
 
 func truncStr(s string, max int) string {
 	if len(s) > max {
-		return s[:max] + "..."
+		return headBytes(s, max) + "..."
 	}
 	return s
 }
@@ -1377,6 +1396,3 @@ func (l *lines) add(format string, args ...any) {
 }
 func (l *lines) blank()         { l.s = append(l.s, "") }
 func (l *lines) String() string { return strings.Join(l.s, "\n") }
-
-// sortStrings is used by tests/helpers needing deterministic ordering.
-func sortStrings(s []string) []string { sort.Strings(s); return s }

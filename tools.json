@@ -83,7 +83,7 @@
       "readOnlyHint": true,
       "openWorldHint": true
     },
-    "description": "Fetch the console log for a Jenkins build. Use when diagnosing a failure after jenkins_get_build shows result=FAILURE/UNSTABLE. By default returns the tail (last 200KB) to stay within context — pass full=true for everything, or tailChars to set a different cap. For Pipeline jobs, pass stageId (from jenkins_get_build output) to get just that stage's logs, which is dramatically smaller and more focused than the whole console.",
+    "description": "Fetch the console log for a Jenkins build. Use when diagnosing a failure after jenkins_get_build shows result=FAILURE/UNSTABLE. By default returns the tail (last 200KB) to stay within context — pass full=true for everything, or tailChars to set a different cap in bytes. For Pipeline jobs, pass stageId (from jenkins_get_build output) to get just that stage's logs, which is dramatically smaller and more focused than the whole console.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -125,7 +125,7 @@
         },
         "tailChars": {
           "type": "integer",
-          "description": "Return only the last N characters (default 200000). Ignored if full=true.",
+          "description": "Return only the last N bytes of the log (default 200000), cut at a character boundary. Ignored if full=true.",
           "default": 200000,
           "minimum": 1
         },

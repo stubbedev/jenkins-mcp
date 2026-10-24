@@ -198,3 +198,14 @@ func TestResolveRevision(t *testing.T) {
 		}
 	}
 }
+
+func TestParsePatchRejectsUnknownFields(t *testing.T) {
+	if p, err := parsePatch(map[string]any{"description": "d", "disabled": true}); err != nil || p.Description == nil || *p.Description != "d" {
+		t.Fatalf("known fields: got %+v, %v", p, err)
+	}
+	for _, field := range []string{"scm", "buildRevision", "descripton"} {
+		if _, err := parsePatch(map[string]any{field: "x"}); err == nil || !strings.Contains(err.Error(), field) {
+			t.Errorf("patch with %q: want unknown-field error, got %v", field, err)
+		}
+	}
+}

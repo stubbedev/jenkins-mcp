@@ -31,8 +31,8 @@ Every install option runs the same single static Go binary: **npm** (`npx @stubb
 
 | Tool | Description |
 |---|---|
-| `jenkins_get_job_config` | Fetch a job's configuration as a structured object (TOON by default) — pipeline definition, triggers, parameters, and retention settings. |
-| `jenkins_update_job_config` | Patch a job's configuration. Pass only the fields to change; everything else is preserved. Supports description, pipeline script/path, triggers, parameters, and build retention. |
+| `jenkins_get_job_config` | Fetch a job's configuration as a structured object (TOON by default) — pipeline definition, triggers, parameters, retention settings, and the SCM section (Git remotes with credential ids, never secrets; branch specs, flagged when parameterized). `buildRevision` says whether `jenkins_build_revision` will pin a commit on this job, and why not when it won't. |
+| `jenkins_update_job_config` | Patch a job's configuration. Pass only the fields to change; everything else is preserved. Supports description, pipeline script/path, triggers, parameters, and build retention. `scm` and `buildRevision` are read-only, and unknown patch fields are rejected. |
 
 ### Natural-language examples
 

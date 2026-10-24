@@ -325,7 +325,7 @@
       "readOnlyHint": true,
       "openWorldHint": true
     },
-    "description": "Fetch the configuration for a Jenkins job as a structured object. Use when asked to \"show the job config\", \"what does the Jenkinsfile point to?\", or before making changes with jenkins_update_job_config. Pipeline jobs include the script path or inline Groovy. Freestyle jobs include build steps and triggers.",
+    "description": "Fetch the configuration for a Jenkins job as a structured object. Use when asked to \"show the job config\", \"what does the Jenkinsfile point to?\", or before making changes with jenkins_update_job_config. Pipeline jobs include the script path or inline Groovy. Includes the SCM section: Git remotes (URL with any embedded credentials redacted, credentials id), branch specs (flagged when parameterized) and the IgnoreNotifyCommit extension. buildRevision.mode says whether jenkins_build_revision will build an exact commit on this job: pinsCommit, pinsCommitWithoutBranch (parameterized branch spec: pass sha explicitly), or notTriggered, with the reason. For Pipeline jobs Jenkins matches notifications against the SCMs the last build checked out, which normally include the definition SCM shown here.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -388,7 +388,7 @@
         },
         "patch": {
           "type": "object",
-          "description": "Fields to update. All fields are optional \u2014 only provided fields are changed.",
+          "description": "Fields to update. All fields are optional \u2014 only provided fields are changed. Unknown fields, including the read-only scm and buildRevision from jenkins_get_job_config, are rejected.",
           "properties": {
             "description": {
               "type": "string"

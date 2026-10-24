@@ -1,6 +1,8 @@
 package main
 
 import (
+	"fmt"
+	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
@@ -50,6 +52,44 @@ type JobConfig struct {
 	BuildRetention   *BuildRetention `json:"buildRetention,omitempty"`
 }
 
+type JobConfigView struct {
+	JobConfig
+	SCM           []SCMConfig          `json:"scm,omitempty"`
+	BuildRevision BuildRevisionSupport `json:"buildRevision"`
+}
+
+type SCMConfig struct {
+	Type               string          `json:"type"`
+	Remotes            []GitRemote     `json:"remotes,omitempty"`
+	Branches           []GitBranchSpec `json:"branches,omitempty"`
+	IgnoreNotifyCommit bool            `json:"ignoreNotifyCommit,omitempty"`
+}
+
+type GitRemote struct {
+	Name          string `json:"name,omitempty"`
+	URL           string `json:"url"`
+	Refspec       string `json:"refspec,omitempty"`
+	CredentialsID string `json:"credentialsId,omitempty"`
+}
+
+type GitBranchSpec struct {
+	Name          string `json:"name"`
+	Parameterized bool   `json:"parameterized,omitempty"`
+}
+
+type BuildRevisionMode string
+
+const (
+	buildRevisionPinsCommit              BuildRevisionMode = "pinsCommit"
+	buildRevisionPinsCommitWithoutBranch BuildRevisionMode = "pinsCommitWithoutBranch"
+	buildRevisionNotTriggered            BuildRevisionMode = "notTriggered"
+)
+
+type BuildRevisionSupport struct {
+	Mode   BuildRevisionMode `json:"mode"`
+	Reason string            `json:"reason"`
+}
+
 type PipelineDef struct {
 	Type        string `json:"type"` // "inline" | "scm"
 	Script      string `json:"script,omitempty"`
@@ -76,9 +116,18 @@ type BuildRetention struct {
 }
 
 const (
-	tagTimerTrigger = "hudson.triggers.TimerTrigger"
-	tagSCMTrigger   = "hudson.triggers.SCMTrigger"
-	tagParamsProp   = "hudson.model.ParametersDefinitionProperty"
+	tagTimerTrigger          = "hudson.triggers.TimerTrigger"
+	tagSCMTrigger            = "hudson.triggers.SCMTrigger"
+	tagParamsProp            = "hudson.model.ParametersDefinitionProperty"
+	tagPipelineTriggersProp  = "org.jenkinsci.plugins.workflow.job.properties.PipelineTriggersJobProperty"
+	classGitSCM              = "hudson.plugins.git.GitSCM"
+	classMultiSCM            = "org.jenkinsci.plugins.multiplescms.MultiSCM"
+	classNullSCM             = "hudson.scm.NullSCM"
+	tagGitUserRemoteConfig   = "hudson.plugins.git.UserRemoteConfig"
+	tagGitBranchSpec         = "hudson.plugins.git.BranchSpec"
+	tagGitIgnoreNotifyCommit = "hudson.plugins.git.extensions.impl.IgnoreNotifyCommit"
+	redactedUserinfo         = "xxxxx"
+	scmTypeGit               = "git"
 )
 
 // paramClass maps the public parameter type onto its Jenkins XML element name.
@@ -113,16 +162,16 @@ func jobTypeFromTag(tag string) string {
 }
 
 // parseJobConfig reads a Jenkins config.xml into the structured JobConfig view.
-func parseJobConfig(xml string) (*JobConfig, error) {
+func parseJobConfig(xml string) (*JobConfigView, error) {
 	doc, _, err := newConfigDoc(xml)
 	if err != nil {
 		return nil, err
 	}
 	root := doc.Root()
 	if root == nil {
-		return &JobConfig{Type: "unknown"}, nil
+		return nil, errEmptyConfig
 	}
-	cfg := &JobConfig{Type: jobTypeFromTag(root.Tag)}
+	cfg := &JobConfigView{JobConfig: JobConfig{Type: jobTypeFromTag(root.Tag)}}
 
 	if d := childText(root, "description"); d != "" {
 		cfg.Description = &d
@@ -184,7 +233,159 @@ func parseJobConfig(xml string) (*JobConfig, error) {
 		}
 	}
 
+	cfg.SCM = parseSCMs(root)
+	cfg.BuildRevision = buildRevisionSupport(root, cfg.Disabled != nil && *cfg.Disabled, cfg.SCM)
 	return cfg, nil
+}
+
+func scmElements(root *etree.Element) []*etree.Element {
+	var out []*etree.Element
+	if scm := root.SelectElement("scm"); scm != nil {
+		out = append(out, scm)
+	}
+	if defn := root.SelectElement("definition"); defn != nil {
+		if scm := defn.SelectElement("scm"); scm != nil {
+			out = append(out, scm)
+		}
+	}
+	return out
+}
+
+func scmClass(e *etree.Element) string {
+	return e.SelectAttrValue("class", e.Tag)
+}
+
+func parseSCMs(root *etree.Element) []SCMConfig {
+	var out []SCMConfig
+	for _, e := range scmElements(root) {
+		out = append(out, parseSCM(e)...)
+	}
+	return out
+}
+
+func parseSCM(e *etree.Element) []SCMConfig {
+	switch class := scmClass(e); class {
+	case classNullSCM:
+		return nil
+	case classGitSCM:
+		return []SCMConfig{parseGitSCM(e)}
+	case classMultiSCM:
+		scms := e.SelectElement("scms")
+		if scms == nil {
+			return nil
+		}
+		var out []SCMConfig
+		for _, child := range scms.ChildElements() {
+			out = append(out, parseSCM(child)...)
+		}
+		return out
+	default:
+		return []SCMConfig{{Type: class}}
+	}
+}
+
+func parseGitSCM(e *etree.Element) SCMConfig {
+	scm := SCMConfig{Type: scmTypeGit}
+	if remotes := e.SelectElement("userRemoteConfigs"); remotes != nil {
+		for _, r := range remotes.SelectElements(tagGitUserRemoteConfig) {
+			scm.Remotes = append(scm.Remotes, GitRemote{
+				Name:          strings.TrimSpace(childText(r, "name")),
+				URL:           redactRemoteURL(strings.TrimSpace(childText(r, "url"))),
+				Refspec:       strings.TrimSpace(childText(r, "refspec")),
+				CredentialsID: strings.TrimSpace(childText(r, "credentialsId")),
+			})
+		}
+	}
+	if branches := e.SelectElement("branches"); branches != nil {
+		for _, b := range branches.SelectElements(tagGitBranchSpec) {
+			name := strings.TrimSpace(childText(b, "name"))
+			scm.Branches = append(scm.Branches, GitBranchSpec{Name: name, Parameterized: strings.Contains(name, "$")})
+		}
+	}
+	if ext := e.SelectElement("extensions"); ext != nil {
+		scm.IgnoreNotifyCommit = ext.SelectElement(tagGitIgnoreNotifyCommit) != nil
+	}
+	return scm
+}
+
+func redactRemoteURL(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil || u.User == nil {
+		return raw
+	}
+	if _, hasPassword := u.User.Password(); hasPassword {
+		return u.Redacted()
+	}
+	if u.Scheme == "http" || u.Scheme == "https" {
+		u.User = url.User(redactedUserinfo)
+		return u.String()
+	}
+	return raw
+}
+
+func scmTriggers(root *etree.Element) []*etree.Element {
+	var out []*etree.Element
+	if trig := root.SelectElement("triggers"); trig != nil {
+		out = append(out, trig.SelectElements(tagSCMTrigger)...)
+	}
+	if props := root.SelectElement("properties"); props != nil {
+		if prop := props.SelectElement(tagPipelineTriggersProp); prop != nil {
+			if trig := prop.SelectElement("triggers"); trig != nil {
+				out = append(out, trig.SelectElements(tagSCMTrigger)...)
+			}
+		}
+	}
+	return out
+}
+
+func buildRevisionSupport(root *etree.Element, disabled bool, scms []SCMConfig) BuildRevisionSupport {
+	notTriggered := func(reason string) BuildRevisionSupport {
+		return BuildRevisionSupport{Mode: buildRevisionNotTriggered, Reason: reason}
+	}
+	if disabled {
+		return notTriggered("the job is disabled, and notifyCommit never schedules disabled jobs")
+	}
+	var listening []SCMConfig
+	hasGit := false
+	for _, scm := range scms {
+		if scm.Type != scmTypeGit {
+			continue
+		}
+		hasGit = true
+		if !scm.IgnoreNotifyCommit {
+			listening = append(listening, scm)
+		}
+	}
+	if !hasGit {
+		return notTriggered("the job has no Git SCM, so the Git plugin's notifyCommit does not consider it")
+	}
+	if len(listening) == 0 {
+		return notTriggered("every Git SCM has the \"Don't trigger a build on commit notifications\" (IgnoreNotifyCommit) extension")
+	}
+	triggers := scmTriggers(root)
+	if len(triggers) == 0 {
+		return notTriggered("\"Poll SCM\" is not enabled; notifyCommit only reaches jobs with an SCM polling trigger (an empty schedule is enough)")
+	}
+	reacting := false
+	for _, t := range triggers {
+		if ignore, _ := childBool(t, "ignorePostCommitHooks"); !ignore {
+			reacting = true
+		}
+	}
+	if !reacting {
+		return notTriggered("the \"Poll SCM\" trigger has \"Ignore post-commit hooks\" set")
+	}
+	for _, scm := range listening {
+		for _, b := range scm.Branches {
+			if b.Parameterized {
+				return BuildRevisionSupport{
+					Mode:   buildRevisionPinsCommitWithoutBranch,
+					Reason: fmt.Sprintf("branch spec %q is parameterized: with a branch filter notifyCommit only polls and ignores sha1, so call jenkins_build_revision with an explicit sha (which sends no branch filter) to pin the commit", b.Name),
+				}
+			}
+		}
+	}
+	return BuildRevisionSupport{Mode: buildRevisionPinsCommit, Reason: "jenkins_build_revision pins the commit when the notified url matches one of the remotes and the branch matches a branch spec"}
 }
 
 func parseParameters(root *etree.Element) []Parameter {

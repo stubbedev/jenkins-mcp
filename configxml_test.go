@@ -1,6 +1,8 @@
 package main
 
 import (
+	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -119,3 +121,146 @@ func TestMergeChoiceParameters(t *testing.T) {
 }
 
 func ptr(s string) *string { return &s }
+
+const gitSCMXML = `<scm class="hudson.plugins.git.GitSCM" plugin="git@5.2.1">
+    <configVersion>2</configVersion>
+    <userRemoteConfigs>
+      <hudson.plugins.git.UserRemoteConfig>
+        <name>origin</name>
+        <url>https://ci:s3cret@git.example.com/k.git</url>
+        <credentialsId>git-creds</credentialsId>
+      </hudson.plugins.git.UserRemoteConfig>
+    </userRemoteConfigs>
+    <branches>
+      <hudson.plugins.git.BranchSpec><name>%s</name></hudson.plugins.git.BranchSpec>
+    </branches>
+    <extensions>%s</extensions>
+  </scm>`
+
+func freestyleXML(scm, triggers string, disabled bool) string {
+	return fmt.Sprintf(`<?xml version='1.1' encoding='UTF-8'?>
+<project>
+  %s
+  <disabled>%t</disabled>
+  <triggers>%s</triggers>
+</project>`, scm, disabled, triggers)
+}
+
+const pollTrigger = `<hudson.triggers.SCMTrigger><spec></spec><ignorePostCommitHooks>false</ignorePostCommitHooks></hudson.triggers.SCMTrigger>`
+
+func TestParseFreestyleGitSCM(t *testing.T) {
+	cfg, err := parseJobConfig(freestyleXML(fmt.Sprintf(gitSCMXML, "**", ""), pollTrigger, false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []SCMConfig{{
+		Type:     "git",
+		Remotes:  []GitRemote{{Name: "origin", URL: "https://ci:xxxxx@git.example.com/k.git", CredentialsID: "git-creds"}},
+		Branches: []GitBranchSpec{{Name: "**"}},
+	}}
+	if !reflect.DeepEqual(cfg.SCM, want) {
+		t.Errorf("scm = %+v, want %+v", cfg.SCM, want)
+	}
+	if cfg.BuildRevision.Mode != buildRevisionPinsCommit {
+		t.Errorf("buildRevision = %+v, want pinsCommit", cfg.BuildRevision)
+	}
+	for _, format := range []string{"json", "toon"} {
+		out := renderStructured(cfg, format)
+		if strings.Contains(out, "s3cret") {
+			t.Errorf("%s output leaks the remote password:\n%s", format, out)
+		}
+		for _, s := range []string{"git-creds", "pinsCommit", "k.git"} {
+			if !strings.Contains(out, s) {
+				t.Errorf("%s output missing %q:\n%s", format, s, out)
+			}
+		}
+	}
+}
+
+func TestBuildRevisionSupport(t *testing.T) {
+	git := func(branch, ext string) string { return fmt.Sprintf(gitSCMXML, branch, ext) }
+	cases := []struct {
+		name       string
+		xml        string
+		wantMode   BuildRevisionMode
+		wantReason string
+	}{
+		{"wildcard spec with poll trigger", freestyleXML(git("**", ""), pollTrigger, false), buildRevisionPinsCommit, "pins the commit"},
+		{"parameterized branch spec", freestyleXML(git("${BRANCH}", ""), pollTrigger, false), buildRevisionPinsCommitWithoutBranch, `"${BRANCH}" is parameterized`},
+		{"no poll trigger", freestyleXML(git("**", ""), "", false), buildRevisionNotTriggered, "Poll SCM"},
+		{"post-commit hooks ignored", freestyleXML(git("**", ""), `<hudson.triggers.SCMTrigger><spec/><ignorePostCommitHooks>true</ignorePostCommitHooks></hudson.triggers.SCMTrigger>`, false), buildRevisionNotTriggered, "Ignore post-commit hooks"},
+		{"IgnoreNotifyCommit extension", freestyleXML(git("**", "<hudson.plugins.git.extensions.impl.IgnoreNotifyCommit/>"), pollTrigger, false), buildRevisionNotTriggered, "IgnoreNotifyCommit"},
+		{"disabled job", freestyleXML(git("**", ""), pollTrigger, true), buildRevisionNotTriggered, "disabled"},
+		{"no SCM", freestyleXML(`<scm class="hudson.scm.NullSCM"/>`, pollTrigger, false), buildRevisionNotTriggered, "no Git SCM"},
+		{"pipeline from SCM with trigger property", `<flow-definition>
+  <properties>
+    <org.jenkinsci.plugins.workflow.job.properties.PipelineTriggersJobProperty>
+      <triggers>` + pollTrigger + `</triggers>
+    </org.jenkinsci.plugins.workflow.job.properties.PipelineTriggersJobProperty>
+  </properties>
+  <definition class="org.jenkinsci.plugins.workflow.cps.CpsScmFlowDefinition">
+    ` + git("main", "") + `
+    <scriptPath>Jenkinsfile</scriptPath>
+  </definition>
+</flow-definition>`, buildRevisionPinsCommit, "pins the commit"},
+	}
+	for _, tc := range cases {
+		cfg, err := parseJobConfig(tc.xml)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		if cfg.BuildRevision.Mode != tc.wantMode || !strings.Contains(cfg.BuildRevision.Reason, tc.wantReason) {
+			t.Errorf("%s: buildRevision = %+v, want mode %s with reason containing %q", tc.name, cfg.BuildRevision, tc.wantMode, tc.wantReason)
+		}
+	}
+}
+
+func TestParseMultiAndForeignSCMs(t *testing.T) {
+	multi := `<scm class="org.jenkinsci.plugins.multiplescms.MultiSCM">
+    <scms>
+      <hudson.plugins.git.GitSCM>
+        <userRemoteConfigs><hudson.plugins.git.UserRemoteConfig><url>git@host:a.git</url></hudson.plugins.git.UserRemoteConfig></userRemoteConfigs>
+        <branches><hudson.plugins.git.BranchSpec><name>*/main</name></hudson.plugins.git.BranchSpec></branches>
+      </hudson.plugins.git.GitSCM>
+      <hudson.scm.SubversionSCM><locations/></hudson.scm.SubversionSCM>
+    </scms>
+  </scm>`
+	cfg, err := parseJobConfig(freestyleXML(multi, pollTrigger, false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []SCMConfig{
+		{Type: "git", Remotes: []GitRemote{{URL: "git@host:a.git"}}, Branches: []GitBranchSpec{{Name: "*/main"}}},
+		{Type: "hudson.scm.SubversionSCM"},
+	}
+	if !reflect.DeepEqual(cfg.SCM, want) {
+		t.Errorf("scm = %+v, want %+v", cfg.SCM, want)
+	}
+	if cfg.BuildRevision.Mode != buildRevisionPinsCommit {
+		t.Errorf("buildRevision = %+v, want pinsCommit from the Git member", cfg.BuildRevision)
+	}
+}
+
+func TestRedactRemoteURL(t *testing.T) {
+	cases := map[string]string{
+		"https://u:p@host/r.git":           "https://u:xxxxx@host/r.git",
+		"https://ghp_token@github.com/o/r": "https://xxxxx@github.com/o/r",
+		"http://token@host/r.git":          "http://xxxxx@host/r.git",
+		"ssh://git@host/r.git":             "ssh://git@host/r.git",
+		"ssh://git:pw@host/r.git":          "ssh://git:xxxxx@host/r.git",
+		"git@host:o/r.git":                 "git@host:o/r.git",
+		"https://git.example.com/k.git":    "https://git.example.com/k.git",
+		"file:///srv/git/r.git":            "file:///srv/git/r.git",
+	}
+	for in, want := range cases {
+		if got := redactRemoteURL(in); got != want {
+			t.Errorf("redactRemoteURL(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestParseEmptyConfigFails(t *testing.T) {
+	if _, err := parseJobConfig("<?xml version='1.1'?>"); err == nil {
+		t.Error("want an error for a config.xml without a root element")
+	}
+}

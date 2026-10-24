@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -541,9 +542,11 @@ func parsePatch(raw any) (*JobConfig, error) {
 	if err != nil {
 		return nil, fmt.Errorf("invalid patch: %w", err)
 	}
+	dec := json.NewDecoder(bytes.NewReader(b))
+	dec.DisallowUnknownFields()
 	var patch JobConfig
-	if err := json.Unmarshal(b, &patch); err != nil {
-		return nil, fmt.Errorf("invalid patch: %w", err)
+	if err := dec.Decode(&patch); err != nil {
+		return nil, fmt.Errorf("invalid patch (scm and buildRevision are read-only): %w", err)
 	}
 	return &patch, nil
 }
@@ -633,7 +636,7 @@ func writeToolGuide(l *lines) {
 	l.add("- \"stop/abort a build\" → `jenkins_stop_build` with jobPath + buildNumber.")
 	l.add("- \"trigger/start a build\" → `jenkins_trigger_build` with jobPath and optional parameters.")
 	l.add("- \"build this exact commit/branch\" (freestyle Git-plugin jobs, where a plain trigger rebuilds the last built revision) → `jenkins_build_revision`; url, branch and sha default to the current repo, branch and HEAD.")
-	l.add("- \"show job config / Jenkinsfile settings\" → `jenkins_get_job_config` with jobPath.")
+	l.add("- \"show job config / Jenkinsfile settings / SCM remote and branch spec\" → `jenkins_get_job_config` with jobPath; its buildRevision field says whether `jenkins_build_revision` will pin a commit on that job.")
 	l.add("- \"update job config\" → `jenkins_update_job_config` with jobPath + patch. Get current config first with jenkins_get_job_config.")
 	l.blank()
 	l.add("Job path syntax: nested folders use slashes, e.g. \"platform/api/build-master\". URL-encoding is handled by the tool. Tools also accept `job` as an alias for `jobPath`.")

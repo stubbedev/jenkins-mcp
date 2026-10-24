@@ -164,25 +164,43 @@ func TestCwdContextRoundTrip(t *testing.T) {
 }
 
 func TestHTTPCwdFromHeaders(t *testing.T) {
-	mk := func(headers map[string]string) string {
+	mk := func(headers map[string][]string) (string, error) {
 		r := httptest.NewRequest("POST", "/mcp", nil)
-		for k, v := range headers {
-			r.Header.Set(k, v)
+		for k, vs := range headers {
+			for _, v := range vs {
+				r.Header.Add(k, v)
+			}
 		}
-		return cwdFromContext(httpCwdFromHeaders(context.Background(), r))
+		ctx, err := httpCwdFromHeaders(context.Background(), r)
+		if err != nil {
+			return "", err
+		}
+		return cwdFromContext(ctx), nil
 	}
-	if got := mk(nil); got != "" {
-		t.Errorf("no header: got %q, want \"\"", got)
+	for name, c := range map[string]struct {
+		headers map[string][]string
+		want    string
+	}{
+		"no header":     {nil, ""},
+		"X-Repo-Root":   {map[string][]string{"X-Repo-Root": {"/a"}}, "/a"},
+		"X-Cwd":         {map[string][]string{"X-Cwd": {"/b"}}, "/b"},
+		"both agreeing": {map[string][]string{"X-Repo-Root": {"/a"}, "X-Cwd": {"/a"}}, "/a"},
+	} {
+		if got, err := mk(c.headers); err != nil || got != c.want {
+			t.Errorf("%s: got %q, %v; want %q", name, got, err, c.want)
+		}
 	}
-	if got := mk(map[string]string{"X-Repo-Root": "/a"}); got != "/a" {
-		t.Errorf("X-Repo-Root: got %q, want /a", got)
-	}
-	if got := mk(map[string]string{"X-Cwd": "/b"}); got != "/b" {
-		t.Errorf("X-Cwd: got %q, want /b", got)
-	}
-	// X-Repo-Root wins over X-Cwd.
-	if got := mk(map[string]string{"X-Repo-Root": "/a", "X-Cwd": "/b"}); got != "/a" {
-		t.Errorf("both headers: got %q, want /a", got)
+	for name, c := range map[string]struct {
+		headers map[string][]string
+		want    string
+	}{
+		"both disagreeing": {map[string][]string{"X-Repo-Root": {"/a"}, "X-Cwd": {"/b"}}, `X-Repo-Root "/a" and X-Cwd "/b" disagree`},
+		"repeated header":  {map[string][]string{"X-Repo-Root": {"/a", "/b"}}, "at most one X-Repo-Root"},
+		"empty header":     {map[string][]string{"X-Cwd": {""}}, "must not be empty"},
+	} {
+		if _, err := mk(c.headers); err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: want error containing %q, got %v", name, c.want, err)
+		}
 	}
 }
 

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -154,16 +155,31 @@ func serveHTTP(s *mcp.Server, tc transportConfig) error {
 // and git commands run in the right working tree.
 func withRepoRootHeader(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		next.ServeHTTP(w, r.WithContext(httpCwdFromHeaders(r.Context(), r)))
+		ctx, err := httpCwdFromHeaders(r.Context(), r)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
 
 // httpCwdFromHeaders lifts the caller-supplied repo root out of the request
 // headers into the context so git commands run in the right working tree.
-func httpCwdFromHeaders(ctx context.Context, r *http.Request) context.Context {
-	dir := r.Header.Get("X-Repo-Root")
-	if dir == "" {
-		dir = r.Header.Get("X-Cwd")
+func httpCwdFromHeaders(ctx context.Context, r *http.Request) (context.Context, error) {
+	root, cwd := r.Header.Values("X-Repo-Root"), r.Header.Values("X-Cwd")
+	if len(root) > 1 || len(cwd) > 1 {
+		return nil, errors.New("send at most one X-Repo-Root and one X-Cwd header")
 	}
-	return withCwd(ctx, dir)
+	dirs := slices.Compact(slices.Sorted(slices.Values(append(root, cwd...))))
+	switch len(dirs) {
+	case 0:
+		return ctx, nil
+	case 1:
+		if dirs[0] == "" {
+			return nil, errors.New("X-Repo-Root / X-Cwd must not be empty")
+		}
+		return withCwd(ctx, dirs[0]), nil
+	}
+	return nil, fmt.Errorf("X-Repo-Root %q and X-Cwd %q disagree; send one of them", root[0], cwd[0])
 }

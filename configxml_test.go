@@ -264,3 +264,43 @@ func TestParseEmptyConfigFails(t *testing.T) {
 		t.Error("want an error for a config.xml without a root element")
 	}
 }
+
+func TestTriggersRoundTripWebhookPollTrigger(t *testing.T) {
+	xml := freestyleXML(fmt.Sprintf(gitSCMXML, "**", ""), `<hudson.triggers.SCMTrigger><spec></spec><ignorePostCommitHooks>false</ignorePostCommitHooks></hudson.triggers.SCMTrigger>
+    <hudson.triggers.SCMTrigger><spec>H H * * *</spec><ignorePostCommitHooks>true</ignorePostCommitHooks></hudson.triggers.SCMTrigger>`, false)
+	cfg, err := parseJobConfig(xml)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []Trigger{{Type: triggerSCMPoll, Spec: ""}, {Type: triggerSCMPoll, Spec: "H H * * *", IgnorePostCommitHooks: true}}
+	if !reflect.DeepEqual(cfg.Triggers, want) {
+		t.Fatalf("triggers = %+v, want %+v", cfg.Triggers, want)
+	}
+
+	patch := &JobConfig{Triggers: append(cfg.Triggers, Trigger{Type: triggerCron, Spec: "H 2 * * *"})}
+	out, err := mergeJobConfig(xml, patch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	back, err := parseJobConfig(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(back.Triggers, patch.Triggers) {
+		t.Errorf("round-trip triggers = %+v, want %+v", back.Triggers, patch.Triggers)
+	}
+	if back.BuildRevision.Mode != buildRevisionPinsCommit {
+		t.Errorf("buildRevision after round-trip = %+v, want pinsCommit", back.BuildRevision)
+	}
+}
+
+func TestMergeRejectsInvalidTriggers(t *testing.T) {
+	for _, tr := range []Trigger{
+		{Type: "github", Spec: ""},
+		{Type: triggerCron, Spec: "H * * * *", IgnorePostCommitHooks: true},
+	} {
+		if _, err := mergeJobConfig(scmPipelineXML, &JobConfig{Triggers: []Trigger{tr}}); err == nil {
+			t.Errorf("trigger %+v: want an error", tr)
+		}
+	}
+}

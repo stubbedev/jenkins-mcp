@@ -388,7 +388,7 @@
         },
         "patch": {
           "type": "object",
-          "description": "Fields to update. All fields are optional \u2014 only provided fields are changed. Unknown fields, including the read-only scm and buildRevision from jenkins_get_job_config, are rejected.",
+          "description": "Fields to update. All fields are optional \u2014 only provided fields are changed. triggers replaces the job's whole list of cron and scmPoll triggers, so start from the list jenkins_get_job_config returns. Unknown fields, including the read-only scm and buildRevision from jenkins_get_job_config, are rejected.",
           "properties": {
             "description": {
               "type": "string"
@@ -438,7 +438,11 @@
                   },
                   "spec": {
                     "type": "string",
-                    "description": "Cron expression, e.g. \"H/15 * * * *\"."
+                    "description": "Cron expression, e.g. \"H/15 * * * *\". An scmPoll trigger with an empty spec never polls on a schedule but still lets push notifications (webhooks, notifyCommit, jenkins_build_revision) reach the job."
+                  },
+                  "ignorePostCommitHooks": {
+                    "type": "boolean",
+                    "description": "scmPoll only: ignore push notifications (\"Ignore post-commit hooks\"). Default false."
                   }
                 },
                 "required": [

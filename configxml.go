@@ -97,9 +97,31 @@ type PipelineDef struct {
 	Lightweight *bool  `json:"lightweight,omitempty"`
 }
 
+type TriggerType string
+
+const (
+	triggerCron    TriggerType = "cron"
+	triggerSCMPoll TriggerType = "scmPoll"
+)
+
 type Trigger struct {
-	Type string `json:"type"` // "cron" | "scmPoll"
-	Spec string `json:"spec"`
+	Type                  TriggerType `json:"type"`
+	Spec                  string      `json:"spec"`
+	IgnorePostCommitHooks bool        `json:"ignorePostCommitHooks,omitempty"`
+}
+
+func (t Trigger) validate() error {
+	switch t.Type {
+	case triggerCron:
+		if t.IgnorePostCommitHooks {
+			return fmt.Errorf("trigger %q: ignorePostCommitHooks applies only to scmPoll triggers", t.Type)
+		}
+		return nil
+	case triggerSCMPoll:
+		return nil
+	default:
+		return fmt.Errorf("unknown trigger type %q: want %q or %q", t.Type, triggerCron, triggerSCMPoll)
+	}
 }
 
 type Parameter struct {
@@ -204,14 +226,13 @@ func parseJobConfig(xml string) (*JobConfigView, error) {
 	}
 
 	if trig := root.SelectElement("triggers"); trig != nil {
-		for _, t := range trig.SelectElements(tagTimerTrigger) {
-			if spec := childText(t, "spec"); spec != "" {
-				cfg.Triggers = append(cfg.Triggers, Trigger{Type: "cron", Spec: spec})
-			}
-		}
-		for _, t := range trig.SelectElements(tagSCMTrigger) {
-			if spec := childText(t, "spec"); spec != "" {
-				cfg.Triggers = append(cfg.Triggers, Trigger{Type: "scmPoll", Spec: spec})
+		for _, t := range trig.ChildElements() {
+			switch t.Tag {
+			case tagTimerTrigger:
+				cfg.Triggers = append(cfg.Triggers, Trigger{Type: triggerCron, Spec: strings.TrimSpace(childText(t, "spec"))})
+			case tagSCMTrigger:
+				ignore, _ := childBool(t, "ignorePostCommitHooks")
+				cfg.Triggers = append(cfg.Triggers, Trigger{Type: triggerSCMPoll, Spec: strings.TrimSpace(childText(t, "spec")), IgnorePostCommitHooks: ignore})
 			}
 		}
 	}
@@ -477,17 +498,22 @@ func mergeJobConfig(xml string, patch *JobConfig) (string, error) {
 	}
 
 	if patch.Triggers != nil {
+		for _, t := range patch.Triggers {
+			if err := t.validate(); err != nil {
+				return "", err
+			}
+		}
 		removeChild(root, "triggers")
 		trig := root.CreateElement("triggers")
 		for _, t := range patch.Triggers {
 			switch t.Type {
-			case "cron":
+			case triggerCron:
 				el := trig.CreateElement(tagTimerTrigger)
 				el.CreateElement("spec").SetText(t.Spec)
-			case "scmPoll":
+			case triggerSCMPoll:
 				el := trig.CreateElement(tagSCMTrigger)
 				el.CreateElement("spec").SetText(t.Spec)
-				el.CreateElement("ignorePostCommitHooks").SetText("false")
+				el.CreateElement("ignorePostCommitHooks").SetText(strconv.FormatBool(t.IgnorePostCommitHooks))
 			}
 		}
 	}

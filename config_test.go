@@ -230,3 +230,38 @@ func TestLoadDotEnvKeepsExistingEnvironment(t *testing.T) {
 		t.Errorf("an unreadable .env must fail with its path, got %v", err)
 	}
 }
+
+func TestNormalizeRepoJobMapRejectsAmbiguousEntries(t *testing.T) {
+	for name, c := range map[string]struct {
+		raw  map[string]any
+		want string
+	}{
+		"case-insensitive duplicate": {map[string]any{"Org/Repo": "a", "org/repo": "b"}, `repoJobMap keys "Org/Repo" and "org/repo" are the same remote substring`},
+		"empty key":                  {map[string]any{" ": "a"}, "empty key, which would match every remote"},
+		"empty list":                 {map[string]any{"r": []any{}}, `repoJobMap["r"] must name at least one job`},
+		"bad job path":               {map[string]any{"r": []any{"a//b"}}, `repoJobMap["r"] has an invalid job path "a//b"`},
+		"null value":                 {map[string]any{"r": nil}, `repoJobMap["r"] must be a job path or an array of job paths, got null`},
+	} {
+		m := make(map[string]json.RawMessage, len(c.raw))
+		for k, v := range c.raw {
+			b, err := json.Marshal(v)
+			if err != nil {
+				t.Fatal(err)
+			}
+			m[k] = b
+		}
+		if _, err := normalizeRepoJobMap(m); err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: want error containing %q, got %v", name, c.want, err)
+		}
+	}
+}
+
+func TestJobPathPatternMatchesTheSchema(t *testing.T) {
+	for tool, s := range toolSchemas() {
+		for _, arg := range []string{"jobPath", "job", "folder"} {
+			if p, ok := s.properties[arg]; ok && (p.pattern == nil || p.pattern.String() != validJobPath.String()) {
+				t.Errorf("%s.%s pattern = %v, want %s", tool, arg, p.pattern, validJobPath)
+			}
+		}
+	}
+}

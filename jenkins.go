@@ -8,9 +8,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/url"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -360,9 +362,9 @@ func (c *JenkinsClient) resolveJobsForRemote(remote string) []string {
 	lc := strings.ToLower(remote)
 	seen := map[string]bool{}
 	var matches []string
-	for needle, jobs := range c.repoJobMap {
+	for _, needle := range slices.Sorted(maps.Keys(c.repoJobMap)) {
 		if strings.Contains(lc, needle) {
-			for _, j := range jobs {
+			for _, j := range c.repoJobMap[needle] {
 				if !seen[j] {
 					seen[j] = true
 					matches = append(matches, j)
@@ -1137,8 +1139,8 @@ func extractCommit(actions []buildAction) string {
 		if a.LastBuiltRevision != nil && a.LastBuiltRevision.SHA1 != "" {
 			return a.LastBuiltRevision.SHA1
 		}
-		for _, v := range a.BuildsByBranchName {
-			if v.Revision != nil && v.Revision.SHA1 != "" {
+		for _, branch := range slices.Sorted(maps.Keys(a.BuildsByBranchName)) {
+			if v := a.BuildsByBranchName[branch]; v.Revision != nil && v.Revision.SHA1 != "" {
 				return v.Revision.SHA1
 			}
 		}

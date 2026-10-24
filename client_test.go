@@ -2,11 +2,13 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -461,5 +463,23 @@ func TestBuildAndStageLogErrorsAreReported(t *testing.T) {
 	_, err = c.getLog(context.Background(), "demo", 5, "9", 1000, false)
 	if err == nil || !strings.Contains(err.Error(), `fetching the log of step "junit" (node 11) in stage "Test"`) {
 		t.Errorf("a failing step log must fail the stage log, got %v", err)
+	}
+}
+
+func TestRepoMatchesAndCommitsAreDeterministic(t *testing.T) {
+	c := NewJenkinsClient(Config{URL: "http://x", RepoJobMap: map[string][]string{"team/app": {"z-job"}, "app": {"a-job"}, "team": {"m-job", "a-job"}}})
+	for range 20 {
+		if got := c.resolveJobsForRemote("git@host:team/app.git"); !slices.Equal(got, []string{"a-job", "m-job", "z-job"}) {
+			t.Fatalf("resolveJobsForRemote = %v, want jobs in key order without duplicates", got)
+		}
+	}
+	var actions []buildAction
+	if err := json.Unmarshal([]byte(`[{"buildsByBranchName":{"origin/zeta":{"revision":{"SHA1":"zzz"}},"origin/alpha":{"revision":{"SHA1":"aaa"}},"origin/mid":{"revision":{"SHA1":"mmm"}}}}]`), &actions); err != nil {
+		t.Fatal(err)
+	}
+	for range 20 {
+		if got := extractCommit(actions); got != "aaa" {
+			t.Fatalf("extractCommit = %q, want the first branch by name", got)
+		}
 	}
 }

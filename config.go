@@ -140,24 +140,61 @@ func parseConfigFile(data []byte) (Config, error) {
 	return Config{URL: f.URL, Username: f.Username, Token: f.Token, NotifyCommitToken: f.NotifyCommitToken, RepoJobMap: repoJobMap}, nil
 }
 
+var validJobPath = regexp.MustCompile(`^[^/]+(/[^/]+)*$`)
+
 func normalizeRepoJobMap(raw map[string]json.RawMessage) (map[string][]string, error) {
 	if len(raw) == 0 {
 		return nil, nil
 	}
 	out := make(map[string][]string, len(raw))
+	firstKey := make(map[string]string, len(raw))
 	for _, k := range slices.Sorted(maps.Keys(raw)) {
-		var single string
-		if err := json.Unmarshal(raw[k], &single); err == nil {
-			out[strings.ToLower(k)] = []string{single}
-			continue
+		needle := strings.ToLower(strings.TrimSpace(k))
+		if needle == "" {
+			return nil, errors.New("repoJobMap has an empty key, which would match every remote")
 		}
-		var list []string
-		if err := json.Unmarshal(raw[k], &list); err != nil {
-			return nil, fmt.Errorf("repoJobMap[%q] must be a job path or an array of job paths, got %s", k, raw[k])
+		if prev, dup := firstKey[needle]; dup {
+			return nil, fmt.Errorf("repoJobMap keys %q and %q are the same remote substring (keys are case-insensitive)", prev, k)
 		}
-		out[strings.ToLower(k)] = list
+		firstKey[needle] = k
+		jobs, err := decodeJobPaths(raw[k])
+		if err != nil {
+			return nil, fmt.Errorf("repoJobMap[%q] %w", k, err)
+		}
+		out[needle] = jobs
 	}
 	return out, nil
+}
+
+func decodeJobPaths(raw json.RawMessage) ([]string, error) {
+	value, err := decodeJSONValue(raw)
+	if err != nil {
+		return nil, fmt.Errorf("is not valid JSON: %w", err)
+	}
+	var list []string
+	switch v := value.(type) {
+	case string:
+		list = []string{v}
+	case []any:
+		for _, e := range v {
+			job, ok := e.(string)
+			if !ok {
+				return nil, fmt.Errorf("must be a job path or an array of job paths, got %s", raw)
+			}
+			list = append(list, job)
+		}
+	default:
+		return nil, fmt.Errorf("must be a job path or an array of job paths, got %s", raw)
+	}
+	if len(list) == 0 {
+		return nil, errors.New("must name at least one job")
+	}
+	for _, job := range list {
+		if !validJobPath.MatchString(job) {
+			return nil, fmt.Errorf("has an invalid job path %q (folders are separated by single slashes, without leading or trailing ones)", job)
+		}
+	}
+	return list, nil
 }
 
 const dotEnvFile = ".env"

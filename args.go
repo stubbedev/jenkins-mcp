@@ -27,7 +27,7 @@ var knownJSONTypes = []jsonType{typeString, typeInteger, typeNumber, typeBoolean
 type schema struct {
 	types                []jsonType
 	enum                 []string
-	minimum, maximum     *int64
+	minimum, maximum     *int
 	minLength            *int
 	pattern              *regexp.Regexp
 	defaultValue         any
@@ -61,11 +61,7 @@ func compileSchema(path string, raw any) (*schema, error) {
 		case "maximum":
 			s.maximum, err = compileInt(path+".maximum", v)
 		case "minLength":
-			var n *int64
-			if n, err = compileInt(path+".minLength", v); err == nil {
-				l := int(*n)
-				s.minLength = &l
-			}
+			s.minLength, err = compileNonNegativeInt(path+".minLength", v)
 		case "pattern":
 			p, isString := v.(string)
 			if !isString {
@@ -179,16 +175,27 @@ func compileStringList(path string, v any) ([]string, error) {
 	return out, nil
 }
 
-func compileInt(path string, v any) (*int64, error) {
+func compileInt(path string, v any) (*int, error) {
 	n, ok := v.(json.Number)
 	if !ok {
 		return nil, fmt.Errorf("%s must be an integer", path)
 	}
-	i, err := strconv.ParseInt(n.String(), 10, 64)
+	i, err := strconv.Atoi(n.String())
 	if err != nil {
 		return nil, fmt.Errorf("%s must be an integer: %w", path, err)
 	}
 	return &i, nil
+}
+
+func compileNonNegativeInt(path string, v any) (*int, error) {
+	i, err := compileInt(path, v)
+	if err != nil {
+		return nil, err
+	}
+	if *i < 0 {
+		return nil, fmt.Errorf("%s must not be negative, got %d", path, *i)
+	}
+	return i, nil
 }
 
 func showJSON(v any) string {
@@ -234,14 +241,14 @@ func (s *schema) validate(path string, v any) (any, error) {
 		}
 	case json.Number:
 		if slices.Contains(s.types, typeInteger) {
-			if i, err := strconv.ParseInt(val.String(), 10, 64); err == nil {
+			if i, err := strconv.Atoi(val.String()); err == nil {
 				if s.minimum != nil && i < *s.minimum {
 					return nil, fmt.Errorf("%s must be at least %d, got %d", path, *s.minimum, i)
 				}
 				if s.maximum != nil && i > *s.maximum {
 					return nil, fmt.Errorf("%s must be at most %d, got %d", path, *s.maximum, i)
 				}
-				return int(i), nil
+				return i, nil
 			}
 		}
 		if slices.Contains(s.types, typeNumber) {

@@ -28,6 +28,7 @@ func TestParseToolArgsRejectsWrongValues(t *testing.T) {
 		{"jenkins_get_build", `{"includeStages": 1}`, "includeStages must be boolean, got 1"},
 		{"jenkins_list_jobs", `{"limit": "ten"}`, `limit must be integer, got "ten"`},
 		{"jenkins_list_jobs", `{"limit": 2.5}`, "limit must be integer, got 2.5"},
+		{"jenkins_list_jobs", `{"limit": 9223372036854775808}`, "limit must be integer, got 9223372036854775808"},
 		{"jenkins_list_jobs", `{"limit": 0}`, "limit must be at least 1, got 0"},
 		{"jenkins_list_jobs", `{"limit": 201}`, "limit must be at most 200, got 201"},
 		{"jenkins_list_jobs", `{"limit": null}`, "limit must be integer, got null"},
@@ -89,11 +90,13 @@ func TestParseToolArgsAppliesSchemaDefaultsAndAliases(t *testing.T) {
 func TestCompileSchemaRejectsWhatItCannotEnforce(t *testing.T) {
 	cases := map[string]string{
 		`{"type": "object", "additionalProperties": false, "properties": {"a": {"type": "string", "format": "uri"}}}`: `unsupported schema keyword "format"`,
-		`{"type": "object", "properties": {}}`:            "object schema must set additionalProperties",
-		`{"type": "array"}`:                               "array schema must set items",
-		`{"type": "date"}`:                                `unsupported type "date"`,
-		`{"description": "x"}`:                            "schema has no type",
-		`{"type": "integer", "minimum": 1, "default": 0}`: "invalid default",
+		`{"type": "object", "properties": {}}`:                                 "object schema must set additionalProperties",
+		`{"type": "array"}`:                                                    "array schema must set items",
+		`{"type": "date"}`:                                                     `unsupported type "date"`,
+		`{"description": "x"}`:                                                 "schema has no type",
+		`{"type": "integer", "minimum": 1, "default": 0}`:                      "invalid default",
+		`{"type": "string", "minLength": -1}`:                                  "minLength must not be negative, got -1",
+		`{"type": "integer", "maximum": 9223372036854775808}`:                  "maximum must be an integer",
 		`{"type": "object", "additionalProperties": false, "required": ["a"]}`: `required property "a" is not declared`,
 	}
 	for raw, want := range cases {

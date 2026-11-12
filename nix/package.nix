@@ -1,6 +1,7 @@
 {
   perSystem =
     {
+      inputs',
       lib,
       pkgs,
       self',
@@ -8,7 +9,7 @@
     }:
     {
       packages = {
-        jenkins-mcp = pkgs.buildGo127Module {
+        jenkins-mcp = (pkgs.buildGoModule.override { go = inputs'.devtools.packages.go; }) {
           pname = "jenkins-mcp";
           # Version is read from package.json so a normal `npm version` release
           # bump propagates here automatically — the flake never needs hand-editing

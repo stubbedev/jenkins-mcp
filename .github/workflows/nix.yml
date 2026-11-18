@@ -29,8 +29,11 @@ jobs:
         with:
           extra_nix_config: |
             experimental-features = nix-command flakes
-            extra-substituters = https://xilos.dev/c/stubbedev/main
-            extra-trusted-public-keys = xilos.dev/stubbedev/main-1:397R6S49v/FSvP+mZ3HlKrVN1KXhgzHIEIHxA/UuG6Y=
+
+      - uses: stubbedev/xilo@v2
+        with:
+          url: https://xilos.dev
+          cache: stubbedev/main
 
       - name: Copy the flake source into the store
         run: nix flake archive

@@ -51,36 +51,17 @@ jobs:
   nix:
     name: Nix flake build
     runs-on: ubuntu-latest
-    # Exposed as env so the cache steps can be skipped when the secret is
-    # absent — `secrets.*` is not allowed in a step-level `if:`.
-    env:
-      XILO_TOKEN: ${{ secrets.XILO_TOKEN }}
     steps:
       - uses: actions/checkout@v7
       - uses: cachix/install-nix-action@v31
         with:
           extra_nix_config: |
             experimental-features = nix-command flakes
-            extra-substituters = https://xilos.dev/c/stubbedev/main
-            extra-trusted-public-keys = xilos.dev/stubbedev/main-1:397R6S49v/FSvP+mZ3HlKrVN1KXhgzHIEIHxA/UuG6Y=
-      - name: Build flake
-        run: nix build .#default -L --print-out-paths | tee /tmp/outpaths
-
-      # Push this build's closure to the self-hosted xilo cache so nix
-      # consumers tracking master pull a prebuilt binary instead of
-      # recompiling. Only on direct master pushes — PRs and forks have no
-      # token. Replaces the old attic action: the cache moved to xilo and the
-      # attic endpoint now 404s, which failed this job on every push.
-      - name: setup xilo
-        if: env.XILO_TOKEN != '' && github.event_name == 'push' && github.ref == 'refs/heads/master'
-        uses: stubbedev/xilo@v1
+      - uses: stubbedev/xilo@v2
         with:
           url: https://xilos.dev
           cache: stubbedev/main
           token: ${{ secrets.XILO_TOKEN }}
+      - name: Build flake
+        run: nix build .#default -L
 
-      - name: Push to xilo
-        # A failed push is not swallowed: it would leave every consumer
-        # rebuilding from source, so the step fails the job.
-        if: env.XILO_TOKEN != '' && github.event_name == 'push' && github.ref == 'refs/heads/master'
-        run: xilo push stubbedev/main $(cat /tmp/outpaths)
